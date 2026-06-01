@@ -14,6 +14,7 @@ from rich.table import Table
 from rich.text import Text
 
 from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult
+from nos.config.serializer import to_set_commands
 from nos.config.store import ConfigStore
 
 console = Console()
@@ -80,6 +81,8 @@ class OperationalMode:
                 output = self._show_system(sub_args)
             case "forwarding":
                 output = self._show_forwarding()
+            case "configuration":
+                output = self._show_configuration(sub_args)
             case _:
                 return f"error: unknown show sub-command: {sub!r}"
 
@@ -95,6 +98,7 @@ class OperationalMode:
             "  vlans          Show VLAN table\n"
             "  system         Show system information\n"
             "  forwarding     Show PFE forwarding mode\n"
+            "  configuration  Show running configuration as set commands\n"
         )
 
     def _show_interfaces(self, args: list[str]) -> str:
@@ -184,6 +188,31 @@ class OperationalMode:
             "─────────────────────────────────\n"
             "(requires PFE integration for live data)\n"
         )
+
+    def _show_configuration(self, args: list[str]) -> str:
+        """Show running config as JunOS set commands, optionally filtered to a section."""
+        cfg = self.store.get_running()
+        all_cmds = to_set_commands(cfg)
+
+        if not all_cmds:
+            return "(empty configuration)"
+
+        if not args:
+            return "\n".join(all_cmds)
+
+        # Filter to lines whose path starts with the requested section.
+        # to_set_commands outputs JunOS hyphen-case, so args from the user
+        # (also hyphen-case) match directly.
+        section_prefix = "set " + " ".join(args) + " "
+        section_exact  = "set " + " ".join(args)
+        filtered = [
+            cmd for cmd in all_cmds
+            if cmd.startswith(section_prefix) or cmd == section_exact
+        ]
+        if not filtered:
+            section = " ".join(args)
+            return f"(no configuration for '{section}')"
+        return "\n".join(filtered)
 
     # ------------------------------------------------------------------
     # ping / traceroute

@@ -429,6 +429,7 @@ _SHOW_OPER_ARGS = {
     "vlans": "Show VLAN table",
     "system": "Show system information",
     "forwarding": "Show PFE forwarding mode",
+    "configuration": "Show running configuration as set commands",
 }
 
 _CONFIGURE_CMDS = {
@@ -515,13 +516,21 @@ class NOSCompleter(Completer):
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
         prefix = "" if completing_new else (rest[-1] if rest else "")
+
         if not rest or (len(rest) == 1 and not completing_new):
+            # First token after "show": operational sub-commands
             for kw, desc in _SHOW_OPER_ARGS.items():
                 if kw.startswith(prefix):
                     yield Completion(kw, -len(prefix), display_meta=desc)
-            # pipe keyword
             if "|".startswith(prefix):
                 yield Completion("|", -len(prefix), display_meta="Filter output")
+            return
+
+        # "show configuration <section-path>": complete against config tree
+        if rest[0].lower() == "configuration":
+            yield from complete_config_tokens(
+                rest[1:], completing_new, [], self.store
+            )
 
     # ------------------------------------------------------------------
     # Configure mode
@@ -557,22 +566,27 @@ class NOSCompleter(Completer):
     def _complete_show_configure(
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
-        # If pipe char is present, complete after it (e.g. "show | <?>")
+        # After "|": only "compare" (and other pipe filters in the future)
         if "|" in rest:
             pipe_idx = rest.index("|")
             after = rest[pipe_idx + 1:]
             prefix = "" if completing_new else (after[-1] if after else "")
-            for kw, desc in [("compare", "Compare with running config")]:
-                if kw.startswith(prefix):
-                    yield Completion(kw, -len(prefix), display_meta=desc)
+            if "compare".startswith(prefix):
+                yield Completion("compare", -len(prefix),
+                                 display_meta="Compare with running config")
             return
 
-        prefix = "" if completing_new else (rest[-1] if rest else "")
-        if not rest or (len(rest) == 1 and not completing_new):
-            for kw in ("|", "compare"):
-                if kw.startswith(prefix):
-                    yield Completion(kw, -len(prefix),
-                                     display_meta="Compare with running config" if kw == "compare" else "Filter output")
+        # Config section path completions, relative to the current edit_path.
+        # Reuses the same tree-walk as set/delete/edit so the user sees the
+        # same hierarchy (e.g. "show interfaces", "show protocols bgp").
+        yield from complete_config_tokens(
+            rest, completing_new, self.edit_path, self.store
+        )
+
+        # Offer "|" whenever the cursor is at a fresh token boundary so the
+        # user can pipe the output (e.g. "show interfaces | match eth").
+        if completing_new:
+            yield Completion("|", display_meta="Filter output")
 
     def _complete_commit(
         self, rest: list[str], completing_new: bool

@@ -271,13 +271,19 @@ class ConfigureMode:
     # ------------------------------------------------------------------
 
     def _handle_show(self, args: list[str], pipe: Optional[str]) -> str:
-        # "show | compare" or just "show"
+        # "show | compare" → diff only
         if pipe and pipe.strip().startswith("compare"):
             return self._show_compare()
 
         candidate = self.store.get_candidate()
-        subtree = _get_at_path(candidate, self.edit_path)
+        # args extend the current edit_path so "show interfaces" at root
+        # is equivalent to navigating into interfaces and running show.
+        display_path = self.edit_path + args
+        subtree = _get_at_path(candidate, display_path)
         if subtree is None:
+            if display_path:
+                section = " ".join(display_path)
+                return f"(no configuration for '{section}')"
             return "(empty)"
 
         output = render_block(subtree, depth=0)
