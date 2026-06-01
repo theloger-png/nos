@@ -1,0 +1,11 @@
+[Unit]
+Description=NOS CLI Service
+After=network.target nos-pfe.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/nos
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

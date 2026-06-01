@@ -1,0 +1,13 @@
+[Unit]
+Description=NOS Packet Forwarding Engine
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/nos-pfe
+Restart=on-failure
+RuntimeDirectory=nos
+RuntimeDirectoryMode=0750
+
+[Install]
+WantedBy=multi-user.target

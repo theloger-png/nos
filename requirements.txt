@@ -1,0 +1,6 @@
+prompt_toolkit>=3.0
+pyroute2>=0.7
+pyyaml>=6.0
+click>=8.0
+rich>=13.0
+jsonschema>=4.0
