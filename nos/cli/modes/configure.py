@@ -101,6 +101,42 @@ def _deep_merge(base: dict, overlay: dict) -> None:
             base[k] = v
 
 
+def _find_value_split(tokens: list[str]) -> int:
+    """Return the index of the first value token in *tokens*.
+
+    Navigates the JunOS config tree from the root.  When a node with
+    ``is_value=True`` is reached, the token at the current index is the
+    value string (not a further path component).  Returns ``len(tokens)``
+    when all tokens are path components (presence flags or unknown paths).
+    """
+    from nos.cli.completer import CONFIG_TREE  # avoid circular import at module load
+    node = CONFIG_TREE
+    for i, tok in enumerate(tokens):
+        if node.is_value:
+            return i
+        if tok in node.children:
+            node = node.children[tok]
+        elif node.dynamic_child is not None:
+            node = node.dynamic_child
+        else:
+            break  # unknown path component – treat the rest as path
+    return len(tokens)
+
+
+def _quote_value(s: str) -> str:
+    """Wrap *s* in double-quotes, escaping any embedded backslashes or quotes."""
+    escaped = s.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _is_int(s: str) -> bool:
+    try:
+        int(s)
+        return True
+    except ValueError:
+        return False
+
+
 # ============================================================================
 # Configure mode
 # ============================================================================
@@ -173,17 +209,25 @@ class ConfigureMode:
             return "error: set requires arguments"
 
         full_args = self.edit_path + args
-        # Build a "set ..." string and run through the serializer so that the
-        # proven path/value logic (quoted strings, integer detection, dynamic
-        # keys like IP prefixes) is reused exactly.
-        quoted: list[str] = []
-        for tok in full_args:
-            if " " in tok or (tok.startswith('"') and tok.endswith('"')):
-                inner = tok.strip('"')
-                quoted.append(f'"{inner}"')
-            else:
-                quoted.append(tok)
-        cmd = "set " + " ".join(quoted)
+
+        # Use the config tree to find where the value begins.
+        # Tokens *before* split_at are path components (left as-is so that
+        # the serialiser handles hyphen→underscore conversion and dynamic keys
+        # such as IP prefixes).  Tokens *at or after* split_at are the value;
+        # plain strings must be double-quoted so from_set_commands treats them
+        # as string scalars rather than presence flags.
+        # Integers are never quoted: from_set_commands detects them and stores
+        # them as int, which is what schema fields like vlan-id and AS numbers
+        # expect.
+        split_at = _find_value_split(full_args)
+
+        parts: list[str] = []
+        for i, tok in enumerate(full_args):
+            if i >= split_at and not _is_int(tok):
+                tok = _quote_value(tok)
+            parts.append(tok)
+
+        cmd = "set " + " ".join(parts)
         partial = from_set_commands([cmd])
         if not partial:
             return "error: invalid set arguments"
