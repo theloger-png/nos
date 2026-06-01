@@ -11,6 +11,7 @@ setup(
         "click>=8.0",
         "rich>=13.0",
         "jsonschema>=4.0",
+        "pydantic>=2.0",
     ],
     entry_points={
         "console_scripts": [

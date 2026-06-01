@@ -1,0 +1,435 @@
+from __future__ import annotations
+
+import ipaddress
+import re
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+
+# ---------------------------------------------------------------------------
+# Enumerations
+# ---------------------------------------------------------------------------
+
+class SpeedEnum(str, Enum):
+    AUTO = "auto"
+    TEN_M = "10m"
+    HUNDRED_M = "100m"
+    ONE_G = "1g"
+    TEN_G = "10g"
+    TWENTY_FIVE_G = "25g"
+    FORTY_G = "40g"
+    HUNDRED_G = "100g"
+
+
+class DuplexEnum(str, Enum):
+    AUTO = "auto"
+    HALF = "half"
+    FULL = "full"
+
+
+class UserClassEnum(str, Enum):
+    SUPER_USER = "super-user"
+    OPERATOR = "operator"
+    READ_ONLY = "read-only"
+
+
+class InterfaceModeEnum(str, Enum):
+    ACCESS = "access"
+    TRUNK = "trunk"
+
+
+class InstanceTypeEnum(str, Enum):
+    VRF = "vrf"
+    VIRTUAL_ROUTER = "virtual-router"
+
+
+class BgpTypeEnum(str, Enum):
+    INTERNAL = "internal"
+    EXTERNAL = "external"
+
+
+class ProtocolEnum(str, Enum):
+    BGP = "bgp"
+    ISIS = "isis"
+    OSPF = "ospf"
+    STATIC = "static"
+    DIRECT = "direct"
+
+
+# ---------------------------------------------------------------------------
+# IP validation helpers
+# ---------------------------------------------------------------------------
+
+def _assert_ip_address(value: str, label: str) -> None:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        raise ValueError(f"Invalid IP address for {label}: {value!r}")
+
+
+def _assert_ip_prefix(value: str, label: str) -> None:
+    try:
+        ipaddress.ip_network(value, strict=False)
+    except ValueError:
+        raise ValueError(f"Invalid IP prefix for {label}: {value!r}")
+
+
+def _assert_ip_interface(value: str, label: str) -> None:
+    """Accept both bare IPs and IP/prefix notation (e.g. 10.0.0.1/30)."""
+    try:
+        ipaddress.ip_interface(value)
+    except ValueError:
+        raise ValueError(f"Invalid IP interface for {label}: {value!r}")
+
+
+# ---------------------------------------------------------------------------
+# System models
+# ---------------------------------------------------------------------------
+
+class UserAuthentication(BaseModel):
+    plain_text_password: Optional[str] = None
+    ssh_rsa: Optional[str] = None
+
+
+class UserConfig(BaseModel):
+    user_class: Optional[UserClassEnum] = None
+    authentication: Optional[UserAuthentication] = None
+
+
+class SyslogFile(BaseModel):
+    any: Optional[str] = None  # log severity level
+
+
+class SyslogConfig(BaseModel):
+    file: Dict[str, SyslogFile] = {}
+
+
+class NtpConfig(BaseModel):
+    server: List[str] = []
+
+    @field_validator("server", mode="before")
+    @classmethod
+    def coerce_to_list(cls, v: Any) -> List[str]:
+        return [v] if isinstance(v, str) else v
+
+
+class LoginConfig(BaseModel):
+    user: Dict[str, UserConfig] = {}
+
+
+class SystemConfig(BaseModel):
+    host_name: Optional[str] = None
+    domain_name: Optional[str] = None
+    name_server: List[str] = []
+    ntp: Optional[NtpConfig] = None
+    login: Optional[LoginConfig] = None
+    syslog: Optional[SyslogConfig] = None
+
+    @field_validator("name_server", mode="before")
+    @classmethod
+    def coerce_to_list(cls, v: Any) -> List[str]:
+        return [v] if isinstance(v, str) else v
+
+
+# ---------------------------------------------------------------------------
+# Interface models
+# ---------------------------------------------------------------------------
+
+class InetAddress(BaseModel):
+    primary: bool = False
+
+
+def _validate_address_dict_keys(v: Any, family: str) -> Any:
+    if not isinstance(v, dict):
+        raise ValueError("address must be a mapping")
+    for key in v:
+        _assert_ip_interface(key, f"family {family} address")
+    return v
+
+
+class FamilyInet(BaseModel):
+    address: Dict[str, InetAddress] = {}
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def validate_address_keys(cls, v: Any) -> Any:
+        return _validate_address_dict_keys(v, "inet")
+
+
+class FamilyInet6(BaseModel):
+    address: Dict[str, InetAddress] = {}
+
+    @field_validator("address", mode="before")
+    @classmethod
+    def validate_address_keys(cls, v: Any) -> Any:
+        return _validate_address_dict_keys(v, "inet6")
+
+
+class VlanMembers(BaseModel):
+    members: List[str] = []
+
+    @field_validator("members", mode="before")
+    @classmethod
+    def coerce_to_list(cls, v: Any) -> List[str]:
+        return [v] if isinstance(v, str) else v
+
+
+class EthernetSwitching(BaseModel):
+    interface_mode: Optional[InterfaceModeEnum] = None
+    vlan: Optional[VlanMembers] = None
+
+
+class UnitConfig(BaseModel):
+    family_ethernet_switching: Optional[EthernetSwitching] = None
+    family_inet: Optional[FamilyInet] = None
+    family_inet6: Optional[FamilyInet6] = None
+
+
+class InterfaceConfig(BaseModel):
+    description: Optional[str] = None
+    mtu: Optional[int] = Field(None, ge=256, le=9192)
+    speed: Optional[SpeedEnum] = None
+    duplex: Optional[DuplexEnum] = None
+    disable: bool = False
+    family_inet: Optional[FamilyInet] = None
+    family_inet6: Optional[FamilyInet6] = None
+    # Keys are unit numbers stored as strings (JSON object keys are always strings)
+    unit: Optional[Dict[str, UnitConfig]] = None
+
+    @model_validator(mode="after")
+    def check_switchport_xor_routed(self) -> InterfaceConfig:
+        has_routed = self.family_inet is not None or self.family_inet6 is not None
+        has_switching = self.unit is not None and any(
+            u.family_ethernet_switching is not None for u in self.unit.values()
+        )
+        if has_routed and has_switching:
+            raise ValueError(
+                "switchport (unit/family_ethernet_switching) and routed port "
+                "(family_inet/family_inet6) are mutually exclusive on the same interface"
+            )
+        return self
+
+
+# ---------------------------------------------------------------------------
+# VLAN models
+# ---------------------------------------------------------------------------
+
+class VlanConfig(BaseModel):
+    vlan_id: Optional[int] = Field(None, ge=1, le=4094)
+    description: Optional[str] = None
+    l3_interface: Optional[str] = None
+
+    @field_validator("l3_interface")
+    @classmethod
+    def validate_l3_interface_format(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not re.fullmatch(r"irb\.\d+", v):
+            raise ValueError(
+                f"l3_interface must be in the form 'irb.<unit-id>', got: {v!r}"
+            )
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Routing options models
+# ---------------------------------------------------------------------------
+
+class StaticRoute(BaseModel):
+    next_hop: Optional[str] = None
+    discard: bool = False
+    reject: bool = False
+
+    @field_validator("next_hop")
+    @classmethod
+    def validate_next_hop_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "next_hop")
+        return v
+
+    @model_validator(mode="after")
+    def check_single_action(self) -> StaticRoute:
+        count = sum([self.next_hop is not None, self.discard, self.reject])
+        if count > 1:
+            raise ValueError(
+                "Only one of next_hop, discard, or reject may be set on a static route"
+            )
+        return self
+
+
+class StaticRoutingConfig(BaseModel):
+    route: Dict[str, StaticRoute] = {}
+
+    @field_validator("route", mode="before")
+    @classmethod
+    def validate_route_prefixes(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            raise ValueError("route must be a mapping")
+        for key in v:
+            _assert_ip_prefix(key, "static route prefix")
+        return v
+
+
+class RoutingOptionsConfig(BaseModel):
+    static: Optional[StaticRoutingConfig] = None
+    router_id: Optional[str] = None
+    autonomous_system: Optional[int] = Field(None, ge=1, le=4294967295)
+
+    @field_validator("router_id")
+    @classmethod
+    def validate_router_id(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "router_id")
+        return v
+
+
+# ---------------------------------------------------------------------------
+# Protocol models — IS-IS
+# ---------------------------------------------------------------------------
+
+class IsisInterfaceConfig(BaseModel):
+    point_to_point: bool = False
+    level_1_disable: bool = False
+    level_2_disable: bool = False
+    hello_interval: Optional[int] = Field(None, ge=1, le=65535)
+    hold_time: Optional[int] = Field(None, ge=1, le=65535)
+
+
+class IsisLevelConfig(BaseModel):
+    wide_metrics_only: bool = False
+
+
+class IsisConfig(BaseModel):
+    interface: Dict[str, IsisInterfaceConfig] = {}
+    level_1: Optional[IsisLevelConfig] = None
+    level_2: Optional[IsisLevelConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# Protocol models — BGP
+# ---------------------------------------------------------------------------
+
+class BgpNeighbor(BaseModel):
+    description: Optional[str] = None
+    authentication_key: Optional[str] = None
+    hold_time: Optional[int] = Field(None, ge=0, le=65535)
+
+
+class BgpFamilyInet(BaseModel):
+    unicast: bool = False
+
+
+class BgpFamilyInet6(BaseModel):
+    unicast: bool = False
+
+
+class BgpGroup(BaseModel):
+    group_type: Optional[BgpTypeEnum] = None
+    local_as: Optional[int] = Field(None, ge=1, le=4294967295)
+    peer_as: Optional[int] = Field(None, ge=1, le=4294967295)
+    local_address: Optional[str] = None
+    neighbor: Dict[str, BgpNeighbor] = {}
+    export: Optional[str] = None
+    import_policy: Optional[str] = None
+    family_inet: Optional[BgpFamilyInet] = None
+    family_inet6: Optional[BgpFamilyInet6] = None
+
+    @field_validator("local_address")
+    @classmethod
+    def validate_local_address(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "local_address")
+        return v
+
+    @field_validator("neighbor", mode="before")
+    @classmethod
+    def validate_neighbor_ips(cls, v: Any) -> Any:
+        if not isinstance(v, dict):
+            raise ValueError("neighbor must be a mapping")
+        for key in v:
+            _assert_ip_address(key, "neighbor address")
+        return v
+
+    @model_validator(mode="after")
+    def check_ebgp_requires_peer_as(self) -> BgpGroup:
+        if self.group_type == BgpTypeEnum.EXTERNAL and self.peer_as is None:
+            raise ValueError(
+                "eBGP group (group_type: external) requires peer_as to be set"
+            )
+        return self
+
+
+class BgpConfig(BaseModel):
+    group: Dict[str, BgpGroup] = {}
+
+
+class ProtocolsConfig(BaseModel):
+    isis: Optional[IsisConfig] = None
+    bgp: Optional[BgpConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# Policy options models
+# ---------------------------------------------------------------------------
+
+class PolicyFromConfig(BaseModel):
+    prefix_list: Optional[str] = None
+    protocol: Optional[ProtocolEnum] = None
+    route_filter: Optional[str] = None  # free-form for phase 1
+
+
+class PolicyThenConfig(BaseModel):
+    accept: bool = False
+    reject: bool = False
+    next_hop: Optional[str] = None
+    local_preference: Optional[int] = Field(None, ge=0, le=4294967295)
+    metric: Optional[int] = None
+    community_add: Optional[str] = None
+
+    @field_validator("next_hop")
+    @classmethod
+    def validate_next_hop(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "policy then next_hop")
+        return v
+
+
+class PolicyTerm(BaseModel):
+    from_config: Optional[PolicyFromConfig] = None
+    then_config: Optional[PolicyThenConfig] = None
+
+
+class PolicyStatement(BaseModel):
+    term: Dict[str, PolicyTerm] = {}
+
+
+class PolicyOptionsConfig(BaseModel):
+    prefix_list: Dict[str, List[str]] = {}
+    policy_statement: Dict[str, PolicyStatement] = {}
+
+
+# ---------------------------------------------------------------------------
+# Routing instances
+# ---------------------------------------------------------------------------
+
+class RoutingInstanceConfig(BaseModel):
+    instance_type: Optional[InstanceTypeEnum] = None
+    interface: List[str] = []
+    route_distinguisher: Optional[str] = None
+    vrf_target: Optional[str] = None
+    routing_options: Optional[RoutingOptionsConfig] = None
+    protocols: Optional[ProtocolsConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# Top-level configuration
+# ---------------------------------------------------------------------------
+
+class NOSConfig(BaseModel):
+    system: Optional[SystemConfig] = None
+    interfaces: Dict[str, InterfaceConfig] = {}
+    vlans: Dict[str, VlanConfig] = {}
+    routing_options: Optional[RoutingOptionsConfig] = None
+    protocols: Optional[ProtocolsConfig] = None
+    policy_options: Optional[PolicyOptionsConfig] = None
+    routing_instances: Dict[str, RoutingInstanceConfig] = {}
