@@ -1,1 +1,7 @@
-{}
+{
+  "interfaces": {
+    "ens32": {
+      "description": "internet"
+    }
+  }
+}
