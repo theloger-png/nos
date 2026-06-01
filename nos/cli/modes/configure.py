@@ -1,0 +1,322 @@
+"""Configure mode handler for NOS CLI.
+
+Handles all commands available at the configure prompt (#): set, delete,
+edit, up, top, show, commit, rollback, discard, run, exit.
+
+The configure mode maintains an *edit_path* that represents the current
+position in the config hierarchy (JunOS-format, hyphenated).
+"""
+from __future__ import annotations
+
+from typing import Any, Optional
+
+from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult
+from nos.config.commit import CommitEngine, CommitError, RollbackError
+from nos.config.diff import diff
+from nos.config.serializer import from_set_commands
+from nos.config.store import ConfigStore
+
+_parser = CommandParser()
+
+
+# ============================================================================
+# Config rendering
+# ============================================================================
+
+def _j2k(key: str) -> str:
+    """snake_case internal key → JunOS hyphen-case for display."""
+    return str(key).replace("_", "-")
+
+
+def render_block(cfg: Any, depth: int = 0) -> str:
+    """Render *cfg* as a JunOS hierarchical block (for 'show' in configure mode)."""
+    pad = "    " * depth
+    if cfg is None or cfg is False:
+        return ""
+    if cfg is True:
+        return ""  # caller emits bare key
+    if isinstance(cfg, (int, float)):
+        return str(cfg)
+    if isinstance(cfg, str):
+        return f'"{cfg}"' if (" " in cfg or not cfg) else cfg
+    if isinstance(cfg, list):
+        return "\n".join(render_block(item, depth) for item in cfg)
+
+    if not isinstance(cfg, dict):
+        return str(cfg)
+
+    lines: list[str] = []
+    for raw_key, val in sorted(cfg.items(), key=lambda x: str(x[0])):
+        key = _j2k(str(raw_key))
+        if val is None or val is False:
+            continue
+        if val is True:
+            lines.append(f"{pad}{key};")
+        elif isinstance(val, dict):
+            if not val:
+                lines.append(f"{pad}{key};")
+            else:
+                inner = render_block(val, depth + 1)
+                lines.append(f"{pad}{key} {{")
+                if inner:
+                    lines.append(inner)
+                lines.append(f"{pad}}}")
+        elif isinstance(val, (int, float)):
+            lines.append(f"{pad}{key} {val};")
+        elif isinstance(val, str):
+            quoted = f'"{val}"' if (" " in val or not val) else val
+            lines.append(f"{pad}{key} {quoted};")
+        elif isinstance(val, list):
+            for item in val:
+                if isinstance(item, str):
+                    quoted = f'"{item}"' if (" " in item or not item) else item
+                    lines.append(f"{pad}{key} {quoted};")
+                else:
+                    lines.append(f"{pad}{key} {item};")
+    return "\n".join(lines)
+
+
+def _get_at_path(cfg: dict, path: list[str]) -> Any:
+    """Navigate *cfg* dict following *path* (internal snake_case keys)."""
+    node: Any = cfg
+    for part in path:
+        internal = part.replace("-", "_")
+        if isinstance(node, dict) and internal in node:
+            node = node[internal]
+        else:
+            return None
+    return node
+
+
+def _deep_merge(base: dict, overlay: dict) -> None:
+    """Merge *overlay* into *base* in place, recursively."""
+    for k, v in overlay.items():
+        existing = base.get(k)
+        if isinstance(existing, dict) and isinstance(v, dict):
+            _deep_merge(existing, v)
+        elif not isinstance(existing, dict) and isinstance(v, dict):
+            # Presence True upgraded to dict by adding a child
+            base[k] = v
+        else:
+            base[k] = v
+
+
+# ============================================================================
+# Configure mode
+# ============================================================================
+
+class ConfigureMode:
+    """Execute commands in configure mode.
+
+    The caller is responsible for querying and updating ``edit_path`` via the
+    ``edit_path`` attribute after each call.
+    """
+
+    def __init__(self, store: ConfigStore, commit_engine: CommitEngine) -> None:
+        self.store = store
+        self.commit_engine = commit_engine
+        # Current position in config hierarchy (JunOS hyphen format)
+        self.edit_path: list[str] = []
+
+    def execute(self, line: str) -> Optional[str]:
+        """Parse and execute one command line.
+
+        Returns rendered output (may be empty string on success), or a
+        message string.  Raises SystemExit to exit configure mode (caller
+        catches and returns to operational mode).
+        """
+        result = _parser.parse(line, CLIMode.CONFIGURE)
+        if result.is_error:
+            return f"error: {result.error}"
+        return self._dispatch(result)
+
+    def _dispatch(self, result: ParseResult) -> Optional[str]:
+        match result.command:
+            case CommandType.SET:
+                return self._handle_set(result.args)
+            case CommandType.DELETE:
+                return self._handle_delete(result.args)
+            case CommandType.EDIT:
+                return self._handle_edit(result.args)
+            case CommandType.UP:
+                return self._handle_up(int(result.args[0]))
+            case CommandType.TOP:
+                self.edit_path = []
+                return ""
+            case CommandType.SHOW:
+                return self._handle_show(result.args, result.pipe)
+            case CommandType.COMMIT:
+                return self._handle_commit()
+            case CommandType.COMMIT_CHECK:
+                return self._handle_commit_check()
+            case CommandType.COMMIT_CONFIRMED:
+                return self._handle_commit_confirmed(int(result.args[0]))
+            case CommandType.ROLLBACK:
+                return self._handle_rollback(int(result.args[0]))
+            case CommandType.DISCARD:
+                return self._handle_discard()
+            case CommandType.RUN:
+                return self._handle_run(result.args)
+            case CommandType.EXIT:
+                raise SystemExit(0)  # caller interprets as "leave configure mode"
+            case CommandType.UNKNOWN:
+                return f"error: {result.error}"
+            case _:
+                return "error: command not valid in configure mode"
+
+    # ------------------------------------------------------------------
+    # set
+    # ------------------------------------------------------------------
+
+    def _handle_set(self, args: list[str]) -> str:
+        if not args:
+            return "error: set requires arguments"
+
+        full_args = self.edit_path + args
+        # Build a "set ..." string and run through the serializer so that the
+        # proven path/value logic (quoted strings, integer detection, dynamic
+        # keys like IP prefixes) is reused exactly.
+        quoted: list[str] = []
+        for tok in full_args:
+            if " " in tok or (tok.startswith('"') and tok.endswith('"')):
+                inner = tok.strip('"')
+                quoted.append(f'"{inner}"')
+            else:
+                quoted.append(tok)
+        cmd = "set " + " ".join(quoted)
+        partial = from_set_commands([cmd])
+        if not partial:
+            return "error: invalid set arguments"
+        _deep_merge(self.store.candidate, partial)
+        return ""
+
+    # ------------------------------------------------------------------
+    # delete
+    # ------------------------------------------------------------------
+
+    def _handle_delete(self, args: list[str]) -> str:
+        if not args:
+            return "error: delete requires a path"
+        full_path = [p.replace("-", "_") for p in (self.edit_path + args)]
+        self.store.delete_candidate(full_path)
+        return ""
+
+    # ------------------------------------------------------------------
+    # edit / up / top
+    # ------------------------------------------------------------------
+
+    def _handle_edit(self, args: list[str]) -> str:
+        if not args:
+            return "error: edit requires a path"
+        new_path = self.edit_path + args
+        # Validate the path exists in the config tree (best-effort)
+        from nos.cli.completer import navigate_tree, CONFIG_TREE
+        node = navigate_tree(CONFIG_TREE, new_path)
+        if node is None:
+            return f"error: {' '.join(args)!r} is not a valid configuration path"
+        self.edit_path = new_path
+        return ""
+
+    def _handle_up(self, count: int) -> str:
+        levels = min(count, len(self.edit_path))
+        self.edit_path = self.edit_path[:-levels] if levels else self.edit_path
+        return ""
+
+    # ------------------------------------------------------------------
+    # show
+    # ------------------------------------------------------------------
+
+    def _handle_show(self, args: list[str], pipe: Optional[str]) -> str:
+        # "show | compare" or just "show"
+        if pipe and pipe.strip().startswith("compare"):
+            return self._show_compare()
+
+        candidate = self.store.get_candidate()
+        subtree = _get_at_path(candidate, self.edit_path)
+        if subtree is None:
+            return "(empty)"
+
+        output = render_block(subtree, depth=0)
+        if pipe:
+            from nos.cli.modes.operational import _apply_pipe
+            output = _apply_pipe(output, pipe)
+        return output or "(empty)"
+
+    def _show_compare(self) -> str:
+        running = self.store.get_running()
+        candidate = self.store.get_candidate()
+        result = diff(running, candidate)
+        return result if result else "No changes."
+
+    # ------------------------------------------------------------------
+    # commit
+    # ------------------------------------------------------------------
+
+    def _handle_commit(self) -> str:
+        try:
+            self.commit_engine.commit()
+            return "commit complete"
+        except CommitError as exc:
+            lines = ["commit validation failed:"]
+            for err in exc.errors:
+                lines.append(f"  {err}")
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"commit error: {exc}"
+
+    def _handle_commit_check(self) -> str:
+        result = self.commit_engine.commit_check()
+        if result.is_valid:
+            return "configuration check succeeds"
+        lines = ["commit check — validation errors:"]
+        for err in result.errors:
+            lines.append(f"  {err}")
+        return "\n".join(lines)
+
+    def _handle_commit_confirmed(self, minutes: int) -> str:
+        try:
+            self.commit_engine.commit_confirmed(minutes)
+            return (
+                f"commit confirmed — will rollback in {minutes} minute(s)\n"
+                "commit complete\n"
+                f"Use 'commit' to confirm before the timer expires."
+            )
+        except CommitError as exc:
+            lines = ["commit validation failed:"]
+            for err in exc.errors:
+                lines.append(f"  {err}")
+            return "\n".join(lines)
+        except Exception as exc:
+            return f"commit error: {exc}"
+
+    # ------------------------------------------------------------------
+    # rollback / discard
+    # ------------------------------------------------------------------
+
+    def _handle_rollback(self, n: int) -> str:
+        try:
+            self.commit_engine.rollback(n)
+            return f"load complete — rolled back to checkpoint {n}"
+        except RollbackError as exc:
+            return f"error: {exc}"
+        except Exception as exc:
+            return f"error: {exc}"
+
+    def _handle_discard(self) -> str:
+        self.store.discard()
+        return "changes discarded"
+
+    # ------------------------------------------------------------------
+    # run
+    # ------------------------------------------------------------------
+
+    def _handle_run(self, args: list[str]) -> str:
+        if not args:
+            return "error: run requires an operational command"
+        from nos.cli.modes.operational import OperationalMode
+        oper = OperationalMode(self.store)
+        line = " ".join(args)
+        result = oper.execute(line)
+        if result is None:
+            return "error: 'configure' cannot be run from configure mode"
+        return result

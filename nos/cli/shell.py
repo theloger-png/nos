@@ -1,0 +1,260 @@
+"""NOS CLI main shell loop.
+
+Starts a prompt_toolkit-powered interactive session that switches between
+operational mode (> prompt) and configure mode (# prompt), identical in
+feel to JunOS.  Entry point: nos.cli.shell:main.
+"""
+from __future__ import annotations
+
+import getpass
+import socket
+import sys
+from pathlib import Path
+from typing import Optional
+
+from prompt_toolkit import PromptSession, print_formatted_text
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import ANSI, FormattedText, HTML
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.styles import Style
+
+from nos.cli.completer import NOSCompleter
+from nos.cli.modes.configure import ConfigureMode
+from nos.cli.modes.operational import OperationalMode
+from nos.cli.parser import CLIMode
+from nos.config.commit import CommitEngine
+from nos.config.store import ConfigStore
+from nos.config.validator import ConfigValidator
+
+
+# ============================================================================
+# Shell style
+# ============================================================================
+
+_STYLE = Style.from_dict({
+    "prompt.user": "bold ansigreen",
+    "prompt.sep": "bold",
+    "prompt.host": "bold ansigreen",
+    "prompt.context": "ansiblue",
+    "prompt.mode.oper": "bold",
+    "prompt.mode.conf": "bold ansired",
+})
+
+
+# ============================================================================
+# NOS Shell
+# ============================================================================
+
+class NOSShell:
+    """Interactive JunOS-like shell.
+
+    Maintains mode state and delegates command execution to
+    OperationalMode and ConfigureMode handlers.
+    """
+
+    def __init__(
+        self,
+        store: Optional[ConfigStore] = None,
+        username: Optional[str] = None,
+        hostname: Optional[str] = None,
+        history_file: Optional[Path] = None,
+    ) -> None:
+        self.store = store or ConfigStore()
+        validator = ConfigValidator()
+        self.commit_engine = CommitEngine(self.store, validator=validator)
+        self.username = username or getpass.getuser()
+        self.hostname = hostname or socket.gethostname().split(".")[0]
+        self._history_file = history_file or Path.home() / ".nos_history"
+
+        self.mode = CLIMode.OPERATIONAL
+        self.oper_handler = OperationalMode(self.store)
+        self.conf_handler = ConfigureMode(self.store, self.commit_engine)
+
+    # ------------------------------------------------------------------
+    # Prompt construction
+    # ------------------------------------------------------------------
+
+    def _build_prompt(self) -> list:
+        """Return a prompt_toolkit FormattedText prompt."""
+        user = self.username
+        host = self.hostname
+
+        if self.mode == CLIMode.OPERATIONAL:
+            return [
+                ("class:prompt.user", user),
+                ("class:prompt.sep", "@"),
+                ("class:prompt.host", host),
+                ("class:prompt.mode.oper", "> "),
+            ]
+
+        # Configure mode
+        path = self.conf_handler.edit_path
+        parts: list[tuple[str, str]] = [
+            ("class:prompt.user", user),
+            ("class:prompt.sep", "@"),
+            ("class:prompt.host", host),
+        ]
+        if path:
+            ctx = " ".join(path)
+            parts += [
+                ("", " "),
+                ("class:prompt.context", f"({ctx})"),
+            ]
+        parts.append(("class:prompt.mode.conf", "# "))
+        return parts
+
+    # ------------------------------------------------------------------
+    # Key bindings
+    # ------------------------------------------------------------------
+
+    def _build_key_bindings(self, completer: NOSCompleter) -> KeyBindings:
+        bindings = KeyBindings()
+
+        @bindings.add("?")
+        def show_help(event):
+            """Display inline help for the current cursor position."""
+            buf = event.current_buffer
+            text = buf.document.text_before_cursor
+            doc = Document(text, len(text))
+            completions = list(
+                completer.get_completions(doc, CompleteEvent(completion_requested=True))
+            )
+            # Write below current line
+            output = event.app.output
+            output.write("\n")
+            if completions:
+                output.write("Possible completions:\n")
+                for c in completions:
+                    kw = str(c.text)
+                    meta = str(c.display_meta) if c.display_meta else ""
+                    output.write(f"  {kw:<30}  {meta}\n")
+            else:
+                output.write("  <no completions available>\n")
+            output.write("\n")
+            output.flush()
+            # Redraw the prompt
+            event.app.renderer.reset()
+
+        @bindings.add("c-c")
+        def handle_ctrl_c(event):
+            """Ctrl+C clears the current line (JunOS behaviour)."""
+            event.current_buffer.reset()
+            event.app.output.write("^C\n")
+            event.app.output.flush()
+
+        return bindings
+
+    # ------------------------------------------------------------------
+    # Main loop
+    # ------------------------------------------------------------------
+
+    def run(self) -> None:
+        """Start the interactive shell loop."""
+        print(f"NOS — Network Operating System")
+        print(f"Type 'configure' to enter configuration mode, '?' for help.\n")
+
+        history = FileHistory(str(self._history_file))
+
+        while True:
+            completer = NOSCompleter(
+                mode=self.mode,
+                edit_path=self.conf_handler.edit_path,
+                store=self.store,
+            )
+            key_bindings = self._build_key_bindings(completer)
+
+            session: PromptSession = PromptSession(
+                completer=completer,
+                key_bindings=key_bindings,
+                history=history,
+                style=_STYLE,
+                complete_while_typing=False,
+                enable_history_search=True,
+                mouse_support=False,
+            )
+
+            try:
+                line = session.prompt(self._build_prompt())
+            except KeyboardInterrupt:
+                # Ctrl+C at empty prompt → clear, continue
+                continue
+            except EOFError:
+                # Ctrl+D → exit gracefully
+                print("\nExiting NOS CLI.")
+                break
+
+            line = line.strip()
+            if not line:
+                continue
+
+            if self.mode == CLIMode.OPERATIONAL:
+                self._run_operational(line)
+            else:
+                self._run_configure(line)
+
+    def _run_operational(self, line: str) -> None:
+        try:
+            output = self.oper_handler.execute(line)
+        except SystemExit:
+            print("Exiting NOS CLI.")
+            sys.exit(0)
+
+        if output is None:
+            # Switch to configure mode
+            self.mode = CLIMode.CONFIGURE
+            print("Entering configuration mode.\n")
+            return
+
+        if output:
+            print(output)
+
+    def _run_configure(self, line: str) -> None:
+        try:
+            output = self.conf_handler.execute(line)
+        except SystemExit:
+            # exit / quit from configure mode → back to operational
+            self.mode = CLIMode.OPERATIONAL
+            self.conf_handler.edit_path = []
+            print("\nExiting configuration mode.\n")
+            return
+        except Exception as exc:
+            print(f"error: {exc}")
+            return
+
+        if output:
+            print(output)
+
+        # Confirm pending timer if user issued a plain 'commit'
+        from nos.cli.parser import CommandParser, CommandType
+        parsed = CommandParser().parse(line, CLIMode.CONFIGURE)
+        if (
+            parsed.command == CommandType.COMMIT
+            and self.commit_engine.pending_confirmed
+        ):
+            self.commit_engine.confirm()
+
+
+# ============================================================================
+# Entry point
+# ============================================================================
+
+def main() -> None:
+    """Entry point for the ``nos`` CLI command."""
+    import logging
+    logging.basicConfig(
+        level=logging.WARNING,
+        format="%(levelname)s %(name)s: %(message)s",
+    )
+
+    shell = NOSShell()
+    try:
+        shell.run()
+    except KeyboardInterrupt:
+        print("\nInterrupted.")
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
