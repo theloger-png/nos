@@ -1,6 +1,8 @@
 """Tests for 'show configuration' (operational) and 'show <section>' (configure)."""
 from __future__ import annotations
 
+from unittest.mock import Mock, patch
+
 import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
@@ -12,6 +14,48 @@ from nos.cli.parser import CLIMode
 from nos.config.commit import CommitEngine
 from nos.config.store import ConfigStore
 from nos.config.validator import ConfigValidator
+
+
+# ============================================================================
+# Helpers for mocking pyroute2 kernel data
+# ============================================================================
+
+class _MockLink:
+    """Minimal stand-in for pyroute2 ifinfmsg."""
+
+    def __init__(self, name: str, index: int, flags: int, mtu: int, operstate: str) -> None:
+        self._a = {"IFLA_IFNAME": name, "IFLA_MTU": mtu, "IFLA_OPERSTATE": operstate}
+        self._i = {"flags": flags, "index": index}
+
+    def get_attr(self, key: str):
+        return self._a.get(key)
+
+    def __getitem__(self, key: str):
+        return self._i[key]
+
+
+class _MockAddr:
+    """Minimal stand-in for pyroute2 ifaddrmsg."""
+
+    def __init__(self, index: int, address: str, prefixlen: int, family: int = 2) -> None:
+        self._a = {"IFA_ADDRESS": address}
+        self._i = {"index": index, "prefixlen": prefixlen, "family": family}
+
+    def get_attr(self, key: str):
+        return self._a.get(key)
+
+    def __getitem__(self, key: str):
+        return self._i[key]
+
+
+def _make_iproute_mock(links: list, addrs: list):
+    """Return a mock IPRoute class whose instances yield the given links/addrs."""
+    instance = Mock()
+    instance.__enter__ = Mock(return_value=instance)
+    instance.__exit__ = Mock(return_value=False)
+    instance.get_links.return_value = links
+    instance.get_addr.return_value = addrs
+    return Mock(return_value=instance)
 
 
 # ============================================================================
@@ -57,6 +101,466 @@ def populated_store(store, engine):
     cm.execute("set protocols isis interface eth0 point-to-point")
     engine.commit()
     return store
+
+
+# ============================================================================
+# show interfaces — operational mode (live kernel data via pyroute2)
+# ============================================================================
+
+_PATCH_IPROUTE = "nos.cli.modes.operational.IPRoute"
+
+
+class TestShowInterfacesOperational:
+    def test_basic_up_interface(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Physical interface: eth0" in out
+        assert "Physical link is Up" in out
+        assert "MTU: 1500" in out
+
+    def test_down_state_shown(self, oper):
+        links = [_MockLink("eth1", 3, 0, 9000, "DOWN")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Physical link is Down" in out
+
+    def test_unknown_operstate_shown_as_down(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UNKNOWN")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Physical link is Down" in out
+
+    def test_loopback_skipped_by_default(self, oper):
+        lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")  # IFF_LOOPBACK = 0x8
+        eth0 = _MockLink("eth0", 2, 0, 1500, "UP")
+        mock_ip = _make_iproute_mock([lo, eth0], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Physical interface: lo" not in out
+        assert "Physical interface: eth0" in out
+
+    def test_loopback_shown_when_requested(self, oper):
+        lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")
+        mock_ip = _make_iproute_mock([lo], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces lo")
+        assert "Physical interface: lo" in out
+
+    def test_config_description_merged(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description uplink")
+        engine.commit()
+
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Description: uplink" in out
+
+    def test_config_mtu_overrides_kernel_mtu(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 mtu 9000")
+        engine.commit()
+
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "MTU: 9000" in out
+
+    def test_kernel_mtu_used_when_no_config_mtu(self, oper):
+        links = [_MockLink("eth0", 2, 0, 4000, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "MTU: 4000" in out
+
+    def test_ip_addresses_from_kernel(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        addrs = [_MockAddr(2, "192.168.1.1", 24)]
+        mock_ip = _make_iproute_mock(links, addrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Inet  192.168.1.1/24" in out
+
+    def test_ip_addresses_not_from_config(self, oper, engine):
+        # Config has an IP but kernel reports none — kernel wins
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 family inet address 10.0.0.1/30")
+        engine.commit()
+
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])  # no addrs in kernel
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "10.0.0.1" not in out
+
+    def test_non_inet_addrs_skipped(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        addrs = [_MockAddr(2, "fe80::1", 64, family=10)]  # AF_INET6
+        mock_ip = _make_iproute_mock(links, addrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "fe80" not in out
+
+    def test_disabled_interface_shown_as_disabled(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 disable")
+        engine.commit()
+
+        links = [_MockLink("eth0", 2, 0, 1500, "DOWN")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Disabled" in out
+
+    def test_kernel_interface_without_config_still_shown(self, oper):
+        # Interface in kernel but not in config at all
+        links = [_MockLink("eth99", 5, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "Physical interface: eth99" in out
+        assert "Enabled" in out
+
+    def test_no_interfaces_returns_no_interfaces_found(self, oper):
+        mock_ip = _make_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert "No interfaces found" in out
+
+    def test_interfaces_sorted_alphabetically(self, oper):
+        links = [
+            _MockLink("eth1", 3, 0, 1500, "UP"),
+            _MockLink("eth0", 2, 0, 1500, "UP"),
+        ]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces")
+        assert out.index("eth0") < out.index("eth1")
+
+    def test_fallback_to_config_when_pyroute2_unavailable(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description fallback")
+        engine.commit()
+
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces")
+        assert "eth0" in out
+        assert "fallback" in out
+        assert "Unknown" in out  # config-only path uses "Unknown" link state
+
+    def test_fallback_empty_config(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces")
+        assert "No interfaces configured" in out
+
+    def test_kernel_error_falls_back_to_config(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description fallback")
+        engine.commit()
+
+        broken_instance = Mock()
+        broken_instance.__enter__ = Mock(return_value=broken_instance)
+        broken_instance.__exit__ = Mock(return_value=False)
+        broken_instance.get_links.side_effect = OSError("permission denied")
+        broken_ip = Mock(return_value=broken_instance)
+
+        with patch(_PATCH_IPROUTE, broken_ip):
+            out = oper.execute("show interfaces")
+        assert "eth0" in out
+        assert "Unknown" in out
+
+
+# ============================================================================
+# show interfaces terse — operational mode
+# ============================================================================
+
+_TERSE_HDR = (
+    f"{'Interface':<24}{'Admin':<6}{'Link':<5}"
+    f"{'Proto':<9}{'Local':<22}Remote"
+)
+_DESC_HDR = f"{'Interface':<24}{'Admin':<6}{'Link':<5}Description"
+
+
+class TestShowInterfacesTerse:
+    def test_header_line(self, oper):
+        mock_ip = _make_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        # No interfaces → "No interfaces found."
+        assert "No interfaces found" in out
+
+    def test_header_present(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        assert out.splitlines()[0] == _TERSE_HDR
+
+    def test_physical_row_no_address(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        lines = out.splitlines()
+        assert lines[1] == f"{'eth0':<24}{'up':<6}up"
+
+    def test_logical_unit_row_with_address(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        addrs = [_MockAddr(2, "172.18.4.44", 29)]
+        mock_ip = _make_iproute_mock(links, addrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        lines = out.splitlines()
+        assert lines[1] == f"{'ens33':<24}{'up':<6}up"
+        assert lines[2] == f"{'ens33.0':<24}{'up':<6}{'up':<5}{'inet':<9}172.18.4.44/29"
+
+    def test_multiple_ips_continuation_lines(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        addrs = [
+            _MockAddr(2, "10.0.0.1", 30),
+            _MockAddr(2, "192.168.1.1", 24),
+        ]
+        mock_ip = _make_iproute_mock(links, addrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        lines = out.splitlines()
+        # Physical row
+        assert lines[1] == f"{'eth0':<24}{'up':<6}up"
+        # First IP on .0 row
+        assert "eth0.0" in lines[2]
+        assert "10.0.0.1/30" in lines[2]
+        # Second IP on continuation line (44 leading spaces)
+        assert lines[3] == f"{'':44}192.168.1.1/24"
+
+    def test_down_link(self, oper):
+        links = [_MockLink("ens34", 3, 0, 1500, "DOWN")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        assert "down" in out.splitlines()[1]
+
+    def test_admin_down_when_disabled_in_config(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 disable")
+        engine.commit()
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        row = out.splitlines()[1]
+        assert row.startswith(f"{'eth0':<24}down")
+
+    def test_loopback_skipped(self, oper):
+        lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")
+        eth0 = _MockLink("eth0", 2, 0, 1500, "UP")
+        mock_ip = _make_iproute_mock([lo, eth0], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        assert "lo " not in out
+        assert "eth0" in out
+
+    def test_two_interfaces_sorted(self, oper):
+        links = [
+            _MockLink("eth1", 3, 0, 1500, "DOWN"),
+            _MockLink("eth0", 2, 0, 1500, "UP"),
+        ]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        lines = out.splitlines()
+        assert "eth0" in lines[1]
+        assert "eth1" in lines[2]
+
+    def test_fallback_config_link_dash(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description uplink")
+        engine.commit()
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces terse")
+        assert _TERSE_HDR in out
+        assert "eth0" in out
+        assert "-" in out  # link state unknown in config-only path
+
+    def test_fallback_empty_config(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces terse")
+        assert "No interfaces found" in out
+
+    def test_kernel_error_fallback(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description x")
+        engine.commit()
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.get_links.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show interfaces terse")
+        assert "eth0" in out
+
+
+# ============================================================================
+# show interfaces description — operational mode
+# ============================================================================
+
+class TestShowInterfacesDescription:
+    def test_no_interfaces(self, oper):
+        mock_ip = _make_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert "No interfaces found" in out
+
+    def test_header_line(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert out.splitlines()[0] == _DESC_HDR
+
+    def test_row_with_description(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces ens33 description internet")
+        engine.commit()
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert out.splitlines()[1] == (
+            f"{'ens33':<24}{'up':<6}{'up':<5}internet"
+        )
+
+    def test_row_without_description_no_trailing_spaces(self, oper):
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        row = out.splitlines()[1]
+        assert not row.endswith(" ")
+        assert row == f"{'eth0':<24}{'up':<6}up"
+
+    def test_down_link_with_description(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces ens34 description down")
+        engine.commit()
+        links = [_MockLink("ens34", 3, 0, 1500, "DOWN")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert out.splitlines()[1] == (
+            f"{'ens34':<24}{'up':<6}{'down':<5}down"
+        )
+
+    def test_two_interfaces_exact_junos_format(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces ens33 description internet")
+        cm.execute("set interfaces ens34 description down")
+        engine.commit()
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "DOWN"),
+        ]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        lines = out.splitlines()
+        assert lines[0] == _DESC_HDR
+        assert lines[1] == f"{'ens33':<24}{'up':<6}{'up':<5}internet"
+        assert lines[2] == f"{'ens34':<24}{'up':<6}{'down':<5}down"
+
+    def test_admin_down_when_disabled(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 disable")
+        engine.commit()
+        links = [_MockLink("eth0", 2, 0, 1500, "UP")]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert "down" in out.splitlines()[1]
+
+    def test_loopback_skipped(self, oper):
+        lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")
+        eth0 = _MockLink("eth0", 2, 0, 1500, "UP")
+        mock_ip = _make_iproute_mock([lo, eth0], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces description")
+        assert "lo " not in out
+        assert "eth0" in out
+
+    def test_fallback_config_only(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description fallback")
+        engine.commit()
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces description")
+        assert _DESC_HDR in out
+        assert "eth0" in out
+        assert "fallback" in out
+        assert "-" in out  # config-only link state
+
+    def test_fallback_empty_config(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show interfaces description")
+        assert "No interfaces found" in out
+
+    def test_kernel_error_fallback(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set interfaces eth0 description x")
+        engine.commit()
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.get_links.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show interfaces description")
+        assert "eth0" in out
+
+
+# ============================================================================
+# show interfaces — tab completion (operational mode)
+# ============================================================================
+
+class TestShowInterfacesCompletion:
+    def test_show_interfaces_space_offers_terse(self):
+        kws = complete_oper("show interfaces ")
+        assert "terse" in kws
+
+    def test_show_interfaces_space_offers_description(self):
+        kws = complete_oper("show interfaces ")
+        assert "description" in kws
+
+    def test_show_interfaces_partial_t_completes_terse(self):
+        kws = complete_oper("show interfaces t")
+        assert "terse" in kws
+        assert "description" not in kws
+
+    def test_show_interfaces_partial_d_completes_description(self):
+        kws = complete_oper("show interfaces d")
+        assert "description" in kws
+        assert "terse" not in kws
+
+    def test_show_interfaces_terse_space_no_completions(self):
+        kws = complete_oper("show interfaces terse ")
+        assert kws == []
+
+    def test_show_interfaces_description_space_no_completions(self):
+        kws = complete_oper("show interfaces description ")
+        assert kws == []
+
+    def test_show_space_still_offers_interfaces(self):
+        kws = complete_oper("show ")
+        assert "interfaces" in kws
+
+    def test_show_interfaces_does_not_offer_config_sections(self):
+        # "show interfaces " should NOT bleed config-tree completions
+        kws = complete_oper("show interfaces ")
+        assert "system" not in kws
+        assert "routing-options" not in kws
 
 
 # ============================================================================

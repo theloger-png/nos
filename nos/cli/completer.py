@@ -453,6 +453,11 @@ _SHOW_OPER_ARGS = {
     "configuration": "Show running configuration as set commands",
 }
 
+_IFACE_SUB_CMDS = {
+    "terse": "One-line interface status",
+    "description": "Interface descriptions",
+}
+
 _CONFIGURE_CMDS = {
     "set": "Set a configuration parameter",
     "delete": "Delete a configuration element",
@@ -582,8 +587,20 @@ class NOSCompleter(Completer):
                 yield Completion("|", -len(prefix), display_meta="Filter output")
             return
 
+        sub = rest[0].lower()
+
+        # "show interfaces [terse|description]"
+        if sub == "interfaces":
+            sub_rest = rest[1:]
+            sub_prefix = "" if completing_new else (sub_rest[-1] if sub_rest else "")
+            if not sub_rest or (len(sub_rest) == 1 and not completing_new):
+                for kw, meta in _IFACE_SUB_CMDS.items():
+                    if kw.startswith(sub_prefix):
+                        yield Completion(kw, -len(sub_prefix), display_meta=meta)
+            return
+
         # "show configuration <section-path>": complete against config tree
-        if rest[0].lower() == "configuration":
+        if sub == "configuration":
             yield from complete_config_tokens(
                 rest[1:], completing_new, [], self.store
             )
