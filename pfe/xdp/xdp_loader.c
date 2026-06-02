@@ -47,11 +47,13 @@ static const struct {
     const char *name;   /* matches the C variable name in xdp_prog.c */
     const char *pin;    /* path under BPF FS created by fib.c         */
 } g_map_pins[] = {
-    { "fib4_map",  BPF_FS_DIR "/fib4_map"  },
-    { "fib6_map",  BPF_FS_DIR "/fib6_map"  },
-    { "neigh_map", BPF_FS_DIR "/neigh_map" },
-    { "vlan_map",  BPF_FS_DIR "/vlan_map"  },
-    { "stats_map", BPF_FS_DIR "/stats_map" },
+    { "fib4_map",      BPF_FS_DIR "/fib4_map"      },
+    { "fib6_map",      BPF_FS_DIR "/fib6_map"      },
+    { "neigh_map",     BPF_FS_DIR "/neigh_map"      },
+    { "vlan_map",      BPF_FS_DIR "/vlan_map"       },
+    { "stats_map",     BPF_FS_DIR "/stats_map"      },
+    { "local_ip4_map", BPF_FS_DIR "/local_ip4_map"  },
+    { "local_ip6_map", BPF_FS_DIR "/local_ip6_map"  },
 };
 
 #define N_MAPS  ((int)(sizeof(g_map_pins) / sizeof(g_map_pins[0])))

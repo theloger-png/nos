@@ -93,6 +93,18 @@ struct stats_val {
     __u64 tx_bytes;
 };
 
+/* ── Local address sets ──────────────────────────────────────────────────────
+ *
+ * Populated by the userspace loader with the host's own interface addresses.
+ * Keyed by address (network byte order); value is a non-zero presence flag.
+ * Packets whose destination matches an entry are XDP_PASS'd immediately so
+ * the kernel delivers them locally rather than forwarding through the FIB.
+ *
+ * This is necessary in XDP generic mode, which intercepts packets before the
+ * kernel's local-delivery path: without this check, a connected-subnet entry
+ * in fib4_map would match the host's own address and bpf_redirect() it.
+ */
+
 /* ── Map declarations (BPF / kernel space only) ──────────────────────────── */
 #ifdef __bpf__
 
@@ -137,6 +149,22 @@ struct {
     __type(value,       struct stats_val);
     __uint(max_entries, 1024);
 } stats_map SEC(".maps");
+
+/* Local IPv4 addresses — key: __be32 (4 bytes, network byte order) */
+struct {
+    __uint(type,        BPF_MAP_TYPE_HASH);
+    __uint(key_size,    sizeof(__be32));
+    __uint(value_size,  sizeof(__u32));
+    __uint(max_entries, 256);
+} local_ip4_map SEC(".maps");
+
+/* Local IPv6 addresses — key: 16-byte address (network byte order) */
+struct {
+    __uint(type,        BPF_MAP_TYPE_HASH);
+    __uint(key_size,    16);
+    __uint(value_size,  sizeof(__u32));
+    __uint(max_entries, 256);
+} local_ip6_map SEC(".maps");
 
 #endif /* __bpf__ */
 

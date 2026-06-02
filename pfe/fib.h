@@ -63,4 +63,19 @@ int fib_vlan_del(uint16_t vlan_id);
  * Returns -1 if ifindex is not present in the map. */
 int fib_stats_get(uint32_t ifindex, struct fib_stats *out);
 
+/* Local addresses ---------------------------------------------------------- */
+
+/* Add/remove individual host addresses from the local_ip4/ip6 maps.
+ * XDP checks these before the FIB so locally-destined packets are never
+ * forwarded by the fast path. */
+int fib_local_addr4_add(const char *ip);
+int fib_local_addr4_del(const char *ip);
+int fib_local_addr6_add(const char *ip);
+int fib_local_addr6_del(const char *ip);
+
+/* Enumerate all current interface addresses via getifaddrs() and bulk-load
+ * both local maps.  Called automatically from fib_init(); call again after
+ * interface address changes if the PFE is not receiving IPC updates. */
+int fib_sync_local_addrs(void);
+
 #endif /* NOS_FIB_H */

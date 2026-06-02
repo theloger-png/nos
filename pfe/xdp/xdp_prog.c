@@ -11,9 +11,9 @@
  *  2.  Parse Ethernet; drop if frame is too short.
  *  3.  802.1Q: extract VID → vlan_map lookup → redirect if ifindex present (L2 path).
  *      On vlan_map miss, continue with the inner ethertype for L3 processing.
- *  4.  IPv4: LPM lookup in fib4_map → neighbor lookup in neigh_map → dst MAC rewrite
- *      → bpf_redirect() to egress ifindex.
- *  5.  IPv6: same as above using fib6_map / 128-bit prefix key.
+ *  4.  IPv4: local_ip4_map hit → XDP_PASS (local delivery); else LPM lookup in
+ *      fib4_map → neighbor lookup in neigh_map → dst MAC rewrite → bpf_redirect().
+ *  5.  IPv6: same as above, using local_ip6_map / fib6_map / 128-bit prefix key.
  *  6.  FIB miss or unresolved neighbor: XDP_PASS (kernel handles ARP/ND and slow path).
  *  7.  Malformed frame (bounds check failure): XDP_DROP.
  *
@@ -124,6 +124,13 @@ int nos_xdp_fwd(struct xdp_md *ctx)
         if (ip->ihl < 5)           /* minimum header length: 5 × 4 = 20 bytes */
             return XDP_DROP;
 
+        /* Local delivery: XDP generic mode intercepts before the kernel's local
+         * delivery path, so a connected-subnet FIB entry would otherwise match
+         * the host's own address and redirect it rather than deliver locally. */
+        __be32 daddr4 = ip->daddr;
+        if (bpf_map_lookup_elem(&local_ip4_map, &daddr4))
+            return XDP_PASS;
+
         /* LPM lookup: set prefixlen=32 so the trie finds the longest match */
         struct fib4_key fk = {
             .prefixlen = 32,
@@ -154,6 +161,12 @@ int nos_xdp_fwd(struct xdp_md *ctx)
         struct ipv6hdr *ip6 = l3;
         if ((void *)(ip6 + 1) > data_end)
             return XDP_DROP;
+
+        /* Local delivery: same reasoning as IPv4 — check before FIB lookup. */
+        __u8 daddr6[16];
+        __builtin_memcpy(daddr6, &ip6->daddr, 16);
+        if (bpf_map_lookup_elem(&local_ip6_map, daddr6))
+            return XDP_PASS;
 
         /* Build 128-bit LPM key from the destination address */
         struct fib6_key fk = { .prefixlen = 128 };

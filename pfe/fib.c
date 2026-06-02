@@ -2,6 +2,8 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <ifaddrs.h>
+#include <netinet/in.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -21,12 +23,14 @@
 
 /* ── BPF filesystem pin paths ────────────────────────────────────────────── */
 
-#define BPF_FS_DIR  "/sys/fs/bpf/nos"
-#define PIN_FIB4    BPF_FS_DIR "/fib4_map"
-#define PIN_FIB6    BPF_FS_DIR "/fib6_map"
-#define PIN_NEIGH   BPF_FS_DIR "/neigh_map"
-#define PIN_VLAN    BPF_FS_DIR "/vlan_map"
-#define PIN_STATS   BPF_FS_DIR "/stats_map"
+#define BPF_FS_DIR   "/sys/fs/bpf/nos"
+#define PIN_FIB4     BPF_FS_DIR "/fib4_map"
+#define PIN_FIB6     BPF_FS_DIR "/fib6_map"
+#define PIN_NEIGH    BPF_FS_DIR "/neigh_map"
+#define PIN_VLAN     BPF_FS_DIR "/vlan_map"
+#define PIN_STATS    BPF_FS_DIR "/stats_map"
+#define PIN_LOCAL4   BPF_FS_DIR "/local_ip4_map"
+#define PIN_LOCAL6   BPF_FS_DIR "/local_ip6_map"
 
 /* ── logging ─────────────────────────────────────────────────────────────── */
 
@@ -38,11 +42,13 @@
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static int g_fd_fib4  = -1;
-static int g_fd_fib6  = -1;
-static int g_fd_neigh = -1;
-static int g_fd_vlan  = -1;
-static int g_fd_stats = -1;
+static int g_fd_fib4   = -1;
+static int g_fd_fib6   = -1;
+static int g_fd_neigh  = -1;
+static int g_fd_vlan   = -1;
+static int g_fd_stats  = -1;
+static int g_fd_local4 = -1;
+static int g_fd_local6 = -1;
 
 /* ── internal helpers ────────────────────────────────────────────────────── */
 
@@ -134,6 +140,9 @@ static int parse_mac(const char *mac_str, uint8_t mac[ETH_ALEN])
     return 0;
 }
 
+/* forward declaration — defined after fib_init() */
+int fib_sync_local_addrs(void);
+
 /* ── lifecycle ───────────────────────────────────────────────────────────── */
 
 int fib_init(void)
@@ -172,25 +181,45 @@ int fib_init(void)
                     1024, 0);
     if (g_fd_stats < 0) goto err_stats;
 
-    fib_info("maps initialized (fib4=%d fib6=%d neigh=%d vlan=%d stats=%d)",
-             g_fd_fib4, g_fd_fib6, g_fd_neigh, g_fd_vlan, g_fd_stats);
+    g_fd_local4 = open_or_create_map(PIN_LOCAL4,
+                    BPF_MAP_TYPE_HASH, "local_ip4_map",
+                    sizeof(__be32), sizeof(__u32),
+                    256, 0);
+    if (g_fd_local4 < 0) goto err_local4;
+
+    g_fd_local6 = open_or_create_map(PIN_LOCAL6,
+                    BPF_MAP_TYPE_HASH, "local_ip6_map",
+                    16, sizeof(__u32),
+                    256, 0);
+    if (g_fd_local6 < 0) goto err_local6;
+
+    fib_info("maps initialized (fib4=%d fib6=%d neigh=%d vlan=%d stats=%d "
+             "local4=%d local6=%d)",
+             g_fd_fib4, g_fd_fib6, g_fd_neigh, g_fd_vlan, g_fd_stats,
+             g_fd_local4, g_fd_local6);
+
+    fib_sync_local_addrs();
     return 0;
 
-err_stats: close(g_fd_vlan);  g_fd_vlan  = -1;
-err_vlan:  close(g_fd_neigh); g_fd_neigh = -1;
-err_neigh: close(g_fd_fib6);  g_fd_fib6  = -1;
-err_fib6:  close(g_fd_fib4);  g_fd_fib4  = -1;
+err_local6: close(g_fd_local4); g_fd_local4 = -1;
+err_local4: close(g_fd_stats);  g_fd_stats  = -1;
+err_stats:  close(g_fd_vlan);   g_fd_vlan   = -1;
+err_vlan:   close(g_fd_neigh);  g_fd_neigh  = -1;
+err_neigh:  close(g_fd_fib6);   g_fd_fib6   = -1;
+err_fib6:   close(g_fd_fib4);   g_fd_fib4   = -1;
     return -1;
 }
 
 void fib_destroy(void)
 {
     pthread_mutex_lock(&g_lock);
-    if (g_fd_fib4  >= 0) { close(g_fd_fib4);  g_fd_fib4  = -1; }
-    if (g_fd_fib6  >= 0) { close(g_fd_fib6);  g_fd_fib6  = -1; }
-    if (g_fd_neigh >= 0) { close(g_fd_neigh); g_fd_neigh = -1; }
-    if (g_fd_vlan  >= 0) { close(g_fd_vlan);  g_fd_vlan  = -1; }
-    if (g_fd_stats >= 0) { close(g_fd_stats); g_fd_stats = -1; }
+    if (g_fd_fib4   >= 0) { close(g_fd_fib4);   g_fd_fib4   = -1; }
+    if (g_fd_fib6   >= 0) { close(g_fd_fib6);   g_fd_fib6   = -1; }
+    if (g_fd_neigh  >= 0) { close(g_fd_neigh);  g_fd_neigh  = -1; }
+    if (g_fd_vlan   >= 0) { close(g_fd_vlan);   g_fd_vlan   = -1; }
+    if (g_fd_stats  >= 0) { close(g_fd_stats);  g_fd_stats  = -1; }
+    if (g_fd_local4 >= 0) { close(g_fd_local4); g_fd_local4 = -1; }
+    if (g_fd_local6 >= 0) { close(g_fd_local6); g_fd_local6 = -1; }
     pthread_mutex_unlock(&g_lock);
     fib_info("maps closed");
 }
@@ -409,4 +438,109 @@ int fib_stats_get(uint32_t ifindex, struct fib_stats *out)
 
     free(percpu);
     return 0;
+}
+
+/* ── local addresses ─────────────────────────────────────────────────────── */
+
+int fib_local_addr4_add(const char *ip)
+{
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) != 1) {
+        fib_err("fib_local_addr4_add: bad IP '%s'", ip);
+        return -1;
+    }
+    __u32 present = 1;
+    pthread_mutex_lock(&g_lock);
+    int rc = bpf_map_update_elem(g_fd_local4, &addr.s_addr, &present, BPF_ANY);
+    if (rc < 0)
+        fib_err("local_ip4 add %s: %s", ip, strerror(errno));
+    pthread_mutex_unlock(&g_lock);
+    return rc < 0 ? -1 : 0;
+}
+
+int fib_local_addr4_del(const char *ip)
+{
+    struct in_addr addr;
+    if (inet_pton(AF_INET, ip, &addr) != 1) {
+        fib_err("fib_local_addr4_del: bad IP '%s'", ip);
+        return -1;
+    }
+    pthread_mutex_lock(&g_lock);
+    int rc = bpf_map_delete_elem(g_fd_local4, &addr.s_addr);
+    if (rc < 0 && errno != ENOENT)
+        fib_err("local_ip4 del %s: %s", ip, strerror(errno));
+    pthread_mutex_unlock(&g_lock);
+    return rc < 0 ? -1 : 0;
+}
+
+int fib_local_addr6_add(const char *ip)
+{
+    __u8 addr6[16];
+    if (inet_pton(AF_INET6, ip, addr6) != 1) {
+        fib_err("fib_local_addr6_add: bad IP '%s'", ip);
+        return -1;
+    }
+    __u32 present = 1;
+    pthread_mutex_lock(&g_lock);
+    int rc = bpf_map_update_elem(g_fd_local6, addr6, &present, BPF_ANY);
+    if (rc < 0)
+        fib_err("local_ip6 add %s: %s", ip, strerror(errno));
+    pthread_mutex_unlock(&g_lock);
+    return rc < 0 ? -1 : 0;
+}
+
+int fib_local_addr6_del(const char *ip)
+{
+    __u8 addr6[16];
+    if (inet_pton(AF_INET6, ip, addr6) != 1) {
+        fib_err("fib_local_addr6_del: bad IP '%s'", ip);
+        return -1;
+    }
+    pthread_mutex_lock(&g_lock);
+    int rc = bpf_map_delete_elem(g_fd_local6, addr6);
+    if (rc < 0 && errno != ENOENT)
+        fib_err("local_ip6 del %s: %s", ip, strerror(errno));
+    pthread_mutex_unlock(&g_lock);
+    return rc < 0 ? -1 : 0;
+}
+
+int fib_sync_local_addrs(void)
+{
+    struct ifaddrs *ifa_list;
+    if (getifaddrs(&ifa_list) < 0) {
+        fib_err("getifaddrs: %s", strerror(errno));
+        return -1;
+    }
+
+    int n = 0;
+    __u32 present = 1;
+
+    pthread_mutex_lock(&g_lock);
+    for (struct ifaddrs *ifa = ifa_list; ifa; ifa = ifa->ifa_next) {
+        if (!ifa->ifa_addr)
+            continue;
+
+        if (ifa->ifa_addr->sa_family == AF_INET) {
+            __be32 addr =
+                ((struct sockaddr_in *)ifa->ifa_addr)->sin_addr.s_addr;
+            if (bpf_map_update_elem(g_fd_local4, &addr, &present, BPF_ANY) == 0)
+                n++;
+            else
+                fib_warn("local_ip4 sync %s: %s", ifa->ifa_name, strerror(errno));
+
+        } else if (ifa->ifa_addr->sa_family == AF_INET6) {
+            __u8 addr6[16];
+            memcpy(addr6,
+                   &((struct sockaddr_in6 *)ifa->ifa_addr)->sin6_addr, 16);
+            if (bpf_map_update_elem(g_fd_local6, addr6, &present, BPF_ANY) == 0)
+                n++;
+            else
+                fib_warn("local_ip6 sync %s: %s", ifa->ifa_name, strerror(errno));
+        }
+    }
+    pthread_mutex_unlock(&g_lock);
+
+    freeifaddrs(ifa_list);
+    fib_info("local addresses synced: %d entries", n);
+    return n;
 }
