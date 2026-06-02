@@ -512,7 +512,16 @@ _SHOW_OPER_ARGS = {
     "vlans": "Show VLAN table",
     "system": "Show system information",
     "forwarding": "Show PFE forwarding mode",
-    "configuration": "Show running configuration as set commands",
+    "configuration": "Show running configuration (tree format)",
+}
+
+_OPER_PIPE_VERBS: dict[str, str] = {
+    "display": "Change output format",
+    "match":   "Show lines matching a pattern",
+    "except":  "Show lines not matching a pattern",
+    "find":    "Show lines starting from first match",
+    "count":   "Count output lines",
+    "no-more": "Disable pagination",
 }
 
 _IFACE_SUB_CMDS = {
@@ -664,11 +673,36 @@ class NOSCompleter(Completer):
                         yield Completion(kw, -len(sub_prefix), display_meta=meta)
             return
 
-        # "show configuration <section-path>": complete against config tree
+        # "show configuration [<section-path>] [| <pipe-verb> ...]"
         if resolved_sub == "configuration":
-            yield from complete_config_tokens(
-                rest[1:], completing_new, [], self.store
-            )
+            config_rest = rest[1:]
+
+            if "|" in config_rest:
+                pipe_idx = config_rest.index("|")
+                after_pipe = config_rest[pipe_idx + 1:]
+                pipe_prefix = "" if completing_new else (after_pipe[-1] if after_pipe else "")
+
+                if not after_pipe or (len(after_pipe) == 1 and not completing_new):
+                    for verb, desc in _OPER_PIPE_VERBS.items():
+                        if verb.startswith(pipe_prefix):
+                            yield Completion(verb, -len(pipe_prefix), display_meta=desc)
+                elif after_pipe:
+                    resolved_verb, _ = resolve_prefix(
+                        after_pipe[0].lower(), list(_OPER_PIPE_VERBS.keys())
+                    )
+                    if resolved_verb == "display":
+                        sub_prefix = (
+                            "" if completing_new else (after_pipe[1] if len(after_pipe) > 1 else "")
+                        )
+                        if not after_pipe[1:] or (len(after_pipe) == 2 and not completing_new):
+                            if "set".startswith(sub_prefix):
+                                yield Completion("set", -len(sub_prefix),
+                                                 display_meta="Set commands format")
+                return
+
+            yield from complete_config_tokens(config_rest, completing_new, [], self.store)
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
 
     def _complete_ping_options(
         self, rest: list[str], completing_new: bool

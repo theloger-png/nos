@@ -134,6 +134,23 @@ class TestInterfaceUnits:
         kernel.delete_interface.assert_any_call("ens34.200")
         kernel.delete_interface.assert_any_call("ens34")
 
+    def test_interface_deleted_with_unit_0_clears_addresses_first(self):
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+        old = self._iface("ens34", {"0": unit_cfg, "100": {"vlan_id": 100}})
+        applier.apply(old, {})
+        kernel.sync_interface_addresses.assert_called_once_with("ens34", {})
+        kernel.delete_interface.assert_any_call("ens34.100")
+        kernel.delete_interface.assert_any_call("ens34")
+
+    def test_interface_deleted_no_unit_0_does_not_call_sync(self):
+        applier, kernel, _, _ = _make_applier()
+        old = self._iface("ens34", {"100": {"vlan_id": 100}})
+        applier.apply(old, {})
+        kernel.sync_interface_addresses.assert_not_called()
+        kernel.delete_interface.assert_any_call("ens34.100")
+        kernel.delete_interface.assert_any_call("ens34")
+
     def test_top_level_apply_interface_still_called_on_change(self):
         applier, kernel, _, _ = _make_applier()
         old = {"interfaces": {"ens34": {"description": "old", "unit": {}}}}

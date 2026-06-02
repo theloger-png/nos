@@ -5,6 +5,23 @@
     },
     "ens34": {
       "description": "down"
+    },
+    "irb": {
+      "unit": {
+        "101": {
+          "family": {
+            "inet": {
+              "10.0.0.1/24": true
+            }
+          }
+        }
+      }
+    }
+  },
+  "vlans": {
+    "vlan101": {
+      "vlan_id": 101,
+      "l3_interface": "irb.101"
     }
   }
 }

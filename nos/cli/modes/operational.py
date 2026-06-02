@@ -204,6 +204,7 @@ class OperationalMode:
                 output = self._show_forwarding()
             case "configuration":
                 output = self._show_configuration(sub_args)
+                return _apply_pipe(output, pipe, self._config_for_display_set(sub_args))
             case _:  # pragma: no cover
                 return f"error: unknown show sub-command: {sub!r}"
 
@@ -219,7 +220,7 @@ class OperationalMode:
             "  vlans          Show VLAN table\n"
             "  system         Show system information\n"
             "  forwarding     Show PFE forwarding mode\n"
-            "  configuration  Show running configuration as set commands\n"
+            "  configuration  Show running configuration (tree format; use | display set for set commands)\n"
         )
 
     def _show_interfaces(self, args: list[str]) -> str:
@@ -500,29 +501,36 @@ class OperationalMode:
         )
 
     def _show_configuration(self, args: list[str]) -> str:
-        """Show running config as JunOS set commands, optionally filtered to a section."""
-        cfg = self.store.get_running()
-        all_cmds = to_set_commands(cfg)
+        """Show running config in tree format, optionally filtered to a section."""
+        from nos.cli.modes.configure import _get_at_path, render_block
 
-        if not all_cmds:
-            return "(empty configuration)"
+        cfg = self.store.get_running()
 
         if not args:
-            return "\n".join(all_cmds)
+            if not cfg:
+                return "(empty configuration)"
+            return render_block(cfg) or "(empty configuration)"
 
-        # Filter to lines whose path starts with the requested section.
-        # to_set_commands outputs JunOS hyphen-case, so args from the user
-        # (also hyphen-case) match directly.
-        section_prefix = "set " + " ".join(args) + " "
-        section_exact  = "set " + " ".join(args)
-        filtered = [
-            cmd for cmd in all_cmds
-            if cmd.startswith(section_prefix) or cmd == section_exact
-        ]
-        if not filtered:
-            section = " ".join(args)
-            return f"(no configuration for '{section}')"
-        return "\n".join(filtered)
+        section = _get_at_path(cfg, args)
+        if section is None:
+            return f"(no configuration for '{' '.join(args)}')"
+        return render_block(section) or f"(no configuration for '{' '.join(args)}')"
+
+    def _config_for_display_set(self, args: list[str]) -> dict:
+        """Return a config dict scoped to *args* suitable for to_set_commands()."""
+        from nos.cli.modes.configure import _get_at_path
+
+        cfg = self.store.get_running()
+        if not args:
+            return cfg
+        data = _get_at_path(cfg, args)
+        if data is None:
+            return {}
+        # Wrap the subtree back in its path so to_set_commands produces prefixed output.
+        result: object = data
+        for tok in reversed(args):
+            result = {tok.replace("-", "_"): result}
+        return result  # type: ignore[return-value]
 
     # ------------------------------------------------------------------
     # ping / traceroute
@@ -590,8 +598,14 @@ class OperationalMode:
 # Pipe filter
 # ============================================================================
 
-def _apply_pipe(output: str, pipe: Optional[str]) -> str:
-    """Apply a JunOS-style pipe filter to *output*."""
+def _apply_pipe(
+    output: str, pipe: Optional[str], config: Optional[dict] = None
+) -> str:
+    """Apply a JunOS-style pipe filter to *output*.
+
+    *config* is an optional pre-scoped config dict used by ``display set`` to
+    regenerate set-commands format from the tree output.
+    """
     if not pipe:
         return output
 
@@ -619,6 +633,10 @@ def _apply_pipe(output: str, pipe: Optional[str]) -> str:
             return str(len(lines))
         case "no-more":
             pass  # no paging in non-interactive use
+        case "display":
+            if pattern.strip().lower() == "set" and config is not None:
+                cmds = to_set_commands(config)
+                return "\n".join(cmds)
         case _:
             pass
 

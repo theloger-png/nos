@@ -572,77 +572,76 @@ class TestShowConfigurationHandler:
         out = oper.execute("show configuration")
         assert "empty" in out.lower()
 
-    def test_full_config_as_set_commands(self, oper, populated_store):
+    def test_full_config_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration")
-        assert out.startswith("set ")
-        lines = out.splitlines()
-        assert all(ln.startswith("set ") for ln in lines)
+        # Tree format uses { } ; not "set " prefixes
+        assert "{" in out
+        assert ";" in out
+        assert not out.startswith("set ")
 
     def test_full_config_contains_system(self, oper, populated_store):
         out = oper.execute("show configuration")
-        assert "set system host-name" in out
+        assert "host-name" in out
         assert "nos01" in out
 
     def test_full_config_contains_interfaces(self, oper, populated_store):
         out = oper.execute("show configuration")
-        assert "set interfaces" in out
+        assert "eth0" in out
 
     def test_full_config_contains_routing_options(self, oper, populated_store):
         out = oper.execute("show configuration")
-        assert "set routing-options" in out
+        assert "router-id" in out
 
-    def test_section_interfaces(self, oper, populated_store):
+    def test_section_interfaces_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration interfaces")
-        lines = out.splitlines()
-        assert lines, "Expected at least one line"
-        assert all("interfaces" in ln for ln in lines)
-        # Must not contain other sections
-        assert not any(ln.startswith("set system") for ln in lines)
-        assert not any(ln.startswith("set routing-options") for ln in lines)
+        assert "eth0" in out
+        # Other sections must not appear
+        assert "host-name" not in out
+        assert "router-id" not in out
 
-    def test_section_system(self, oper, populated_store):
+    def test_section_system_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration system")
-        lines = out.splitlines()
-        assert all(ln.startswith("set system") for ln in lines)
-        assert any("host-name" in ln for ln in lines)
+        assert "host-name" in out
+        assert "nos01" in out
+        assert "eth0" not in out
 
-    def test_section_routing_options(self, oper, populated_store):
+    def test_section_routing_options_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration routing-options")
-        lines = out.splitlines()
-        assert all(ln.startswith("set routing-options") for ln in lines)
+        assert "router-id" in out
+        assert "host-name" not in out
 
-    def test_section_vlans(self, oper, populated_store):
+    def test_section_vlans_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration vlans")
-        lines = out.splitlines()
-        assert all(ln.startswith("set vlans") for ln in lines)
+        assert "vlan100" in out
+        assert "vlan-id" in out
+        assert "host-name" not in out
 
-    def test_section_protocols(self, oper, populated_store):
+    def test_section_protocols_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration protocols")
-        lines = out.splitlines()
-        assert all(ln.startswith("set protocols") for ln in lines)
+        assert "bgp" in out
+        assert "IBGP" in out
+        assert "host-name" not in out
 
-    def test_subsection_protocols_bgp(self, oper, populated_store):
+    def test_subsection_protocols_bgp_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration protocols bgp")
-        lines = out.splitlines()
-        assert lines
-        assert all(ln.startswith("set protocols bgp") for ln in lines)
-        assert not any("isis" in ln for ln in lines)
+        assert "IBGP" in out
+        assert "type" in out
+        assert "isis" not in out
 
-    def test_subsection_protocols_isis(self, oper, populated_store):
+    def test_subsection_protocols_isis_tree_format(self, oper, populated_store):
         out = oper.execute("show configuration protocols isis")
-        lines = out.splitlines()
-        assert lines
-        assert all(ln.startswith("set protocols isis") for ln in lines)
-        assert not any("bgp" in ln for ln in lines)
+        assert "eth0" in out
+        assert "point-to-point" in out
+        assert "bgp" not in out
 
     def test_nonexistent_section(self, oper, populated_store):
         out = oper.execute("show configuration firewall")
         assert "no configuration" in out.lower() or "empty" in out.lower()
 
-    def test_output_is_sorted(self, oper, populated_store):
+    def test_full_config_sections_appear_as_blocks(self, oper, populated_store):
         out = oper.execute("show configuration")
-        lines = out.splitlines()
-        assert lines == sorted(lines)
+        assert "system {" in out
+        assert "interfaces {" in out
 
     def test_pipe_match_filters_lines(self, oper, populated_store):
         out = oper.execute("show configuration | match host-name")
@@ -652,12 +651,57 @@ class TestShowConfigurationHandler:
 
     def test_pipe_except_excludes_lines(self, oper, populated_store):
         out = oper.execute("show configuration | except system")
-        assert not any(ln.startswith("set system") for ln in out.splitlines())
+        # "system {" block opener is removed
+        assert "system {" not in out
 
     def test_section_with_pipe(self, oper, populated_store):
         out = oper.execute("show configuration interfaces | match eth0")
         lines = out.splitlines()
         assert all("eth0" in ln for ln in lines)
+
+    # ------------------------------------------------------------------
+    # display set pipe
+    # ------------------------------------------------------------------
+
+    def test_display_set_full_config_is_set_commands(self, oper, populated_store):
+        out = oper.execute("show configuration | display set")
+        lines = out.splitlines()
+        assert lines
+        assert all(ln.startswith("set ") for ln in lines)
+
+    def test_display_set_contains_system(self, oper, populated_store):
+        out = oper.execute("show configuration | display set")
+        assert "set system host-name" in out
+        assert "nos01" in out
+
+    def test_display_set_contains_interfaces(self, oper, populated_store):
+        out = oper.execute("show configuration | display set")
+        assert "set interfaces" in out
+
+    def test_display_set_section_interfaces(self, oper, populated_store):
+        out = oper.execute("show configuration interfaces | display set")
+        lines = out.splitlines()
+        assert lines
+        assert all(ln.startswith("set interfaces") for ln in lines)
+        assert not any(ln.startswith("set system") for ln in lines)
+
+    def test_display_set_section_system(self, oper, populated_store):
+        out = oper.execute("show configuration system | display set")
+        lines = out.splitlines()
+        assert lines
+        assert all(ln.startswith("set system") for ln in lines)
+
+    def test_display_set_section_protocols_bgp(self, oper, populated_store):
+        out = oper.execute("show configuration protocols bgp | display set")
+        lines = out.splitlines()
+        assert lines
+        assert all(ln.startswith("set protocols bgp") for ln in lines)
+        assert not any("isis" in ln for ln in lines)
+
+    def test_display_set_output_is_sorted(self, oper, populated_store):
+        out = oper.execute("show configuration | display set")
+        lines = out.splitlines()
+        assert lines == sorted(lines)
 
 
 # ============================================================================
@@ -887,3 +931,56 @@ class TestShowSectionConfigureCompletion:
         kws = complete_conf("show routing-options ")
         assert "static" in kws
         assert "router-id" in kws
+
+
+# ============================================================================
+# Tab completion — show configuration pipe (operational mode)
+# ============================================================================
+
+class TestShowConfigurationPipeCompletion:
+    def test_pipe_offered_after_show_configuration_space(self):
+        kws = complete_oper("show configuration ")
+        assert "|" in kws
+
+    def test_pipe_offered_after_show_configuration_section(self):
+        kws = complete_oper("show configuration interfaces ")
+        assert "|" in kws
+
+    def test_pipe_verbs_offered_after_pipe(self):
+        kws = complete_oper("show configuration | ")
+        assert "display" in kws
+
+    def test_standard_pipe_verbs_offered(self):
+        kws = complete_oper("show configuration | ")
+        assert "match" in kws
+        assert "except" in kws
+        assert "count" in kws
+
+    def test_display_partial_completes(self):
+        kws = complete_oper("show configuration | dis")
+        assert "display" in kws
+        assert "match" not in kws
+
+    def test_set_offered_after_display(self):
+        kws = complete_oper("show configuration | display ")
+        assert "set" in kws
+
+    def test_set_partial_completes_after_display(self):
+        kws = complete_oper("show configuration | display s")
+        assert "set" in kws
+
+    def test_no_completions_after_display_set(self):
+        kws = complete_oper("show configuration | display set ")
+        assert "set" not in kws
+
+    def test_pipe_offered_after_section_and_space(self):
+        kws = complete_oper("show configuration protocols ")
+        assert "|" in kws
+
+    def test_display_offered_after_section_pipe(self):
+        kws = complete_oper("show configuration interfaces | ")
+        assert "display" in kws
+
+    def test_set_offered_after_section_pipe_display(self):
+        kws = complete_oper("show configuration interfaces | display ")
+        assert "set" in kws

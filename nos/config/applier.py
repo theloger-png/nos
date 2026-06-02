@@ -69,7 +69,11 @@ class ConfigApplier:
     ) -> None:
         for name in set(old) - set(new):
             old_cfg = old.get(name) or {}
-            for unit_num_str in (old_cfg.get("unit") or {}):
+            old_units = old_cfg.get("unit") or {}
+            if "0" in old_units:
+                log.info("Clearing addresses on interface %s (deleted)", name)
+                self._kernel.sync_interface_addresses(name, {})
+            for unit_num_str in old_units:
                 unit_num = int(unit_num_str)
                 if unit_num > 0:
                     log.info("Deleting subinterface %s.%d", name, unit_num)
