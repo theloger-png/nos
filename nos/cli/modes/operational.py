@@ -6,8 +6,11 @@ real kernel / FRR data in later phases.
 """
 from __future__ import annotations
 
+import logging
 import subprocess
 from typing import Optional
+
+_LOG = logging.getLogger(__name__)
 
 from rich.console import Console
 from rich.table import Table
@@ -19,6 +22,109 @@ from nos.config.store import ConfigStore
 
 console = Console()
 _parser = CommandParser()
+
+
+# ============================================================================
+# JunOS option parsers for ping / traceroute
+# ============================================================================
+
+def _parse_ping_opts(args: list[str]) -> tuple[list[str], Optional[str]]:
+    """Translate JunOS ping options into Unix flags.
+
+    Returns ``(flags, error_or_None)``.  The default ``-c 5`` is injected
+    unless the caller supplied a ``count`` keyword.
+    """
+    flags: list[str] = []
+    count_set = False
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        match tok:
+            case "count":
+                if i + 1 >= len(args):
+                    return [], "ping: 'count' requires a value"
+                i += 1
+                flags += ["-c", args[i]]
+                count_set = True
+            case "size":
+                if i + 1 >= len(args):
+                    return [], "ping: 'size' requires a value"
+                i += 1
+                flags += ["-s", args[i]]
+            case "interval":
+                if i + 1 >= len(args):
+                    return [], "ping: 'interval' requires a value"
+                i += 1
+                flags += ["-i", args[i]]
+            case "ttl":
+                if i + 1 >= len(args):
+                    return [], "ping: 'ttl' requires a value"
+                i += 1
+                flags += ["-t", args[i]]
+            case "no-resolve":
+                flags.append("-n")
+            case "do-not-fragment":
+                flags += ["-M", "do"]
+            case "source":
+                if i + 1 >= len(args):
+                    return [], "ping: 'source' requires a value"
+                i += 1
+                flags += ["-I", args[i]]
+            case "routing-instance":
+                if i + 1 >= len(args):
+                    return [], "ping: 'routing-instance' requires a value"
+                i += 1
+                _LOG.warning("ping routing-instance %r: not supported in Phase 1; ignored", args[i])
+            case _:
+                return [], f"ping: unknown option {tok!r}"
+        i += 1
+    if not count_set:
+        flags = ["-c", "5"] + flags
+    return flags, None
+
+
+def _parse_traceroute_opts(
+    args: list[str], binary: str
+) -> tuple[list[str], Optional[str]]:
+    """Translate JunOS traceroute options into Unix flags for *binary*.
+
+    Returns ``(flags, error_or_None)``.  Options unsupported by *binary*
+    (i.e. ``tracepath``) are silently skipped with a log warning.
+    """
+    flags: list[str] = []
+    i = 0
+    while i < len(args):
+        tok = args[i]
+        match tok:
+            case "no-resolve":
+                flags.append("-n")
+            case "ttl":
+                if i + 1 >= len(args):
+                    return [], "traceroute: 'ttl' requires a value"
+                i += 1
+                flags += ["-m", args[i]]  # both binaries use -m for max hops
+            case "source":
+                if i + 1 >= len(args):
+                    return [], "traceroute: 'source' requires a value"
+                i += 1
+                if binary == "traceroute":
+                    flags += ["-s", args[i]]
+                else:
+                    _LOG.warning("traceroute source: not supported by %s; ignored", binary)
+            case "wait":
+                if i + 1 >= len(args):
+                    return [], "traceroute: 'wait' requires a value"
+                i += 1
+                if binary == "traceroute":
+                    flags += ["-w", args[i]]
+                else:
+                    _LOG.warning("traceroute wait: not supported by %s; ignored", binary)
+            case "as-number-lookup":
+                _LOG.warning("traceroute as-number-lookup: not supported in Phase 1; ignored")
+            case _:
+                return [], f"traceroute: unknown option {tok!r}"
+        i += 1
+    return flags, None
 
 
 class OperationalMode:
@@ -222,35 +328,55 @@ class OperationalMode:
         if not args:
             return "error: ping requires a host or IP address"
         target = args[0]
-        extra = args[1:]
-        cmd = ["ping", "-c", "5", target] + extra
+        flags, err = _parse_ping_opts(args[1:])
+        if err:
+            return f"error: {err}"
+        cmd = ["ping"] + flags + [target]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-            return (result.stdout + result.stderr).rstrip()
-        except subprocess.TimeoutExpired:
-            return "ping: timed out"
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+            )
+            try:
+                for line in proc.stdout:
+                    print(line, end="", flush=True)
+            except KeyboardInterrupt:
+                proc.terminate()
+                proc.wait()
+            else:
+                proc.wait()
         except FileNotFoundError:
             return "error: ping not found in PATH"
         except Exception as exc:
             return f"error: {exc}"
+        return ""
 
     def _handle_traceroute(self, args: list[str]) -> str:
         if not args:
             return "error: traceroute requires a host or IP address"
         target = args[0]
-        extra = args[1:]
-        # Try traceroute then tracepath as fallback
+        opt_args = args[1:]
         for binary in ("traceroute", "tracepath"):
+            flags, err = _parse_traceroute_opts(opt_args, binary)
+            if err:
+                return f"error: {err}"
             try:
-                result = subprocess.run(
-                    [binary, target] + extra,
-                    capture_output=True, text=True, timeout=60,
+                proc = subprocess.Popen(
+                    [binary] + flags + [target],
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                    text=True, bufsize=1,
                 )
-                return (result.stdout + result.stderr).rstrip()
+                try:
+                    for line in proc.stdout:
+                        print(line, end="", flush=True)
+                except KeyboardInterrupt:
+                    proc.terminate()
+                    proc.wait()
+                else:
+                    proc.wait()
+                return ""
             except FileNotFoundError:
                 continue
-            except subprocess.TimeoutExpired:
-                return f"{binary}: timed out"
             except Exception as exc:
                 return f"error: {exc}"
         return "error: neither traceroute nor tracepath found in PATH"

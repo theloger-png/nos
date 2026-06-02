@@ -421,6 +421,27 @@ _OPERATIONAL_CMDS = {
     "quit": "Exit this session",
 }
 
+# JunOS-style option specs for ping / traceroute completion.
+# Value: (value_hint_or_None, description).  None means a presence flag.
+_PING_OPTS: dict[str, tuple[Optional[str], str]] = {
+    "count":            ("<1-255>",       "Number of ICMP echo requests"),
+    "do-not-fragment":  (None,             "Set Do Not Fragment bit"),
+    "interval":         ("<seconds>",      "Interval between packets"),
+    "no-resolve":       (None,             "Do not resolve hostnames"),
+    "routing-instance": ("<name>",         "Routing instance (Phase 2, ignored)"),
+    "size":             ("<bytes>",        "Packet size in bytes"),
+    "source":           ("<ip-address>",   "Source IP address"),
+    "ttl":              ("<1-255>",        "IP Time To Live"),
+}
+
+_TRACEROUTE_OPTS: dict[str, tuple[Optional[str], str]] = {
+    "as-number-lookup": (None,             "Show AS numbers (Phase 2, ignored)"),
+    "no-resolve":       (None,             "Do not resolve hostnames"),
+    "source":           ("<ip-address>",   "Source IP address"),
+    "ttl":              ("<1-255>",        "Maximum TTL / hop count"),
+    "wait":             ("<seconds>",      "Probe timeout in seconds"),
+}
+
 _SHOW_OPER_ARGS = {
     "interfaces": "Show interface status and counters",
     "route": "Show routing table",
@@ -446,6 +467,43 @@ _CONFIGURE_CMDS = {
     "exit": "Return to operational mode",
     "quit": "Return to operational mode",
 }
+
+
+def _complete_probe_opts(
+    opts: dict[str, tuple[Optional[str], str]],
+    walk_tokens: list[str],
+    prefix: str,
+) -> Generator[Completion, None, None]:
+    """Yield completions for JunOS ping/traceroute options.
+
+    *walk_tokens* are the fully-typed tokens that follow the target host.
+    *prefix* is the partial token currently being typed (empty when the
+    cursor is at a fresh word boundary).
+    """
+    used: set[str] = set()
+    pending_value_for: Optional[str] = None
+
+    for tok in walk_tokens:
+        if pending_value_for is not None:
+            used.add(pending_value_for)
+            pending_value_for = None
+        elif tok in opts:
+            hint, _ = opts[tok]
+            if hint is not None:
+                pending_value_for = tok
+            else:
+                used.add(tok)
+
+    if pending_value_for is not None:
+        hint, desc = opts[pending_value_for]
+        yield Completion(hint, -len(prefix), display_meta=desc)
+        return
+
+    for kw, (_, desc) in sorted(opts.items()):
+        if kw in used:
+            continue
+        if kw.startswith(prefix):
+            yield Completion(kw, -len(prefix), display_meta=desc)
 
 
 class NOSCompleter(Completer):
@@ -506,11 +564,9 @@ class NOSCompleter(Completer):
         if cmd == "show":
             yield from self._complete_show_operational(rest, completing_new)
         elif cmd == "ping":
-            if not rest or (len(rest) == 1 and not completing_new):
-                yield Completion("<host>", display_meta="Hostname or IP address")
+            yield from self._complete_ping_options(rest, completing_new)
         elif cmd == "traceroute":
-            if not rest or (len(rest) == 1 and not completing_new):
-                yield Completion("<host>", display_meta="Hostname or IP address")
+            yield from self._complete_traceroute_options(rest, completing_new)
 
     def _complete_show_operational(
         self, rest: list[str], completing_new: bool
@@ -531,6 +587,30 @@ class NOSCompleter(Completer):
             yield from complete_config_tokens(
                 rest[1:], completing_new, [], self.store
             )
+
+    def _complete_ping_options(
+        self, rest: list[str], completing_new: bool
+    ) -> Generator[Completion, None, None]:
+        if not rest or (len(rest) == 1 and not completing_new):
+            prefix = rest[0] if rest else ""
+            yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
+            return
+        opt_tokens = rest[1:]
+        prefix = "" if completing_new else (opt_tokens[-1] if opt_tokens else "")
+        walk = opt_tokens if completing_new else opt_tokens[:-1]
+        yield from _complete_probe_opts(_PING_OPTS, walk, prefix)
+
+    def _complete_traceroute_options(
+        self, rest: list[str], completing_new: bool
+    ) -> Generator[Completion, None, None]:
+        if not rest or (len(rest) == 1 and not completing_new):
+            prefix = rest[0] if rest else ""
+            yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
+            return
+        opt_tokens = rest[1:]
+        prefix = "" if completing_new else (opt_tokens[-1] if opt_tokens else "")
+        walk = opt_tokens if completing_new else opt_tokens[:-1]
+        yield from _complete_probe_opts(_TRACEROUTE_OPTS, walk, prefix)
 
     # ------------------------------------------------------------------
     # Configure mode
