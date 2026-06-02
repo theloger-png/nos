@@ -185,7 +185,7 @@ class NOSShell:
             )
 
             try:
-                line = session.prompt(self._build_prompt())
+                raw = session.prompt(self._build_prompt())
             except KeyboardInterrupt:
                 # Ctrl+C at empty prompt → clear, continue
                 continue
@@ -194,16 +194,18 @@ class NOSShell:
                 print("\nExiting NOS CLI.")
                 break
 
-            line = line.strip()
-            if not line:
-                continue
+            for line in raw.split("\n"):
+                line = line.strip()
+                if not line:
+                    continue
+                if self.mode == CLIMode.OPERATIONAL:
+                    ok = self._run_operational(line)
+                else:
+                    ok = self._run_configure(line)
+                if not ok:
+                    break
 
-            if self.mode == CLIMode.OPERATIONAL:
-                self._run_operational(line)
-            else:
-                self._run_configure(line)
-
-    def _run_operational(self, line: str) -> None:
+    def _run_operational(self, line: str) -> bool:
         try:
             output = self.oper_handler.execute(line)
         except SystemExit:
@@ -214,12 +216,13 @@ class NOSShell:
             # Switch to configure mode
             self.mode = CLIMode.CONFIGURE
             print("Entering configuration mode.\n")
-            return
+            return True
 
         if output:
             print(output)
+        return not (isinstance(output, str) and output.startswith("error:"))
 
-    def _run_configure(self, line: str) -> None:
+    def _run_configure(self, line: str) -> bool:
         try:
             output = self.conf_handler.execute(line)
         except SystemExit:
@@ -227,10 +230,10 @@ class NOSShell:
             self.mode = CLIMode.OPERATIONAL
             self.conf_handler.edit_path = []
             print("\nExiting configuration mode.\n")
-            return
+            return True
         except Exception as exc:
             print(f"error: {exc}")
-            return
+            return False
 
         if output:
             print(output)
@@ -243,6 +246,7 @@ class NOSShell:
             and self.commit_engine.pending_confirmed
         ):
             self.commit_engine.confirm()
+        return True
 
 
 # ============================================================================

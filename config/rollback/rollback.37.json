@@ -3,8 +3,14 @@
     "ens33": {
       "description": "internet"
     },
-    "ens34": {
-      "description": "down"
+    "ens34.0": {
+      "family": {
+        "inet": {
+          "address": {
+            "10.0.0.1/24": true
+          }
+        }
+      }
     }
   }
 }
