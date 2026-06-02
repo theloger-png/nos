@@ -1,5 +1,4 @@
 """Unit tests for nos.pfe.manager.PFEManager."""
-import pathlib
 from contextlib import contextmanager
 from unittest.mock import MagicMock, call, patch
 
@@ -210,94 +209,109 @@ class TestIsAvailable:
 
 
 # ---------------------------------------------------------------------------
-# detect_forwarding_mode()
+# detect_forwarding_mode() helpers
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def sys_net(tmp_path, manager_ctx):
-    """Patch _SYS_NET to a temp directory and yield its path."""
-    mgr, *_ = manager_ctx
-    # manager is already started and available for most forwarding-mode tests
-    mgr._available = True
-    with patch("nos.pfe.manager._SYS_NET", tmp_path):
-        yield tmp_path
+_XDP_ATTACHED_DRV = "xdpdrv"
+_XDP_ATTACHED_SKB = "xdpgeneric"
+_XDP_ATTACHED_NONE = "none"
 
 
-def _xdp_dir(sys_net: pathlib.Path, ifname: str) -> pathlib.Path:
-    d = sys_net / ifname / "xdp"
-    d.mkdir(parents=True)
-    return d
+def _make_ip_mock(ifname_to_attached: dict):
+    """Return a patch context for nos.pfe.manager.IPRoute.
 
+    Maps ifname → XDP_ATTACHED string value, or None for no IFLA_XDP attribute.
+    """
+    def _link_get(op, **kw):
+        attached = ifname_to_attached.get(kw.get("ifname", ""))
+        link = MagicMock()
+        if attached is None:
+            link.get_attr.return_value = None
+        else:
+            xdp_attr = MagicMock()
+            xdp_attr.get_attr.return_value = attached
+            link.get_attr.return_value = xdp_attr
+        return [link]
+
+    mock_ip = MagicMock()
+    mock_ip.link.side_effect = _link_get
+    mock_cls = MagicMock()
+    mock_cls.return_value.__enter__.return_value = mock_ip
+    mock_cls.return_value.__exit__.return_value = False
+    return patch("nos.pfe.manager.IPRoute", mock_cls)
+
+
+# ---------------------------------------------------------------------------
+# detect_forwarding_mode()
+# ---------------------------------------------------------------------------
 
 class TestDetectForwardingMode:
     def test_kernel_when_unavailable(self, manager):
         assert not manager.is_available()
-        mode = manager.detect_forwarding_mode("eth0")
-        assert mode == ForwardingMode.KERNEL
+        assert manager.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_kernel_when_ping_fails(self, manager_ctx, sys_net):
+    def test_kernel_when_ping_fails(self, manager_ctx):
         mgr, mock_client, *_ = manager_ctx
+        mgr._available = True
         mock_client.send_message.side_effect = PFEError("broken")
-        _xdp_dir(sys_net, "eth0")
         assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_kernel_when_ping_returns_error(self, manager_ctx, sys_net):
+    def test_kernel_when_ping_returns_error(self, manager_ctx):
         mgr, mock_client, *_ = manager_ctx
+        mgr._available = True
         mock_client.send_message.return_value = {"status": "error", "message": "oops"}
-        _xdp_dir(sys_net, "eth0")
         assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_kernel_when_no_xdp_dir(self, manager_ctx, sys_net):
+    def test_kernel_when_no_ifla_xdp(self, manager_ctx):
         mgr, *_ = manager_ctx
-        # Only create the interface dir, no xdp/ subdir
-        (sys_net / "eth0").mkdir()
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
+        mgr._available = True
+        with _make_ip_mock({"eth0": None}):
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_xdp_native_when_drv_subdir_exists(self, manager_ctx, sys_net):
+    def test_kernel_when_xdp_attached_none(self, manager_ctx):
         mgr, *_ = manager_ctx
-        d = _xdp_dir(sys_net, "eth0")
-        (d / "drv").mkdir()
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_NATIVE
+        mgr._available = True
+        with _make_ip_mock({"eth0": _XDP_ATTACHED_NONE}):
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_xdp_generic_when_skb_subdir_exists(self, manager_ctx, sys_net):
+    def test_xdp_native_when_xdp_attached_drv(self, manager_ctx):
         mgr, *_ = manager_ctx
-        d = _xdp_dir(sys_net, "eth0")
-        (d / "skb").mkdir()
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_GENERIC
+        mgr._available = True
+        with _make_ip_mock({"eth0": _XDP_ATTACHED_DRV}):
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_NATIVE
 
-    def test_xdp_generic_when_xdp_dir_exists_without_mode_subdir(
-        self, manager_ctx, sys_net
-    ):
+    def test_xdp_generic_when_xdp_attached_skb(self, manager_ctx):
         mgr, *_ = manager_ctx
-        _xdp_dir(sys_net, "eth0")   # no drv/ or skb/ inside
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_GENERIC
+        mgr._available = True
+        with _make_ip_mock({"eth0": _XDP_ATTACHED_SKB}):
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_GENERIC
 
-    def test_drv_takes_priority_over_skb(self, manager_ctx, sys_net):
-        """If both subdirs exist (shouldn't happen in practice), native wins."""
+    def test_kernel_when_iproute_raises(self, manager_ctx):
         mgr, *_ = manager_ctx
-        d = _xdp_dir(sys_net, "eth0")
-        (d / "drv").mkdir()
-        (d / "skb").mkdir()
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_NATIVE
+        mgr._available = True
+        with patch("nos.pfe.manager.IPRoute") as MockIPRoute:
+            MockIPRoute.return_value.__enter__.side_effect = OSError("netlink error")
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.KERNEL
 
-    def test_sends_ping_before_sysfs_check(self, manager_ctx, sys_net):
+    def test_sends_ping_before_xdp_check(self, manager_ctx):
         mgr, mock_client, *_ = manager_ctx
-        _xdp_dir(sys_net, "eth0")
-        mgr.detect_forwarding_mode("eth0")
+        mgr._available = True
+        with _make_ip_mock({"eth0": _XDP_ATTACHED_SKB}):
+            mgr.detect_forwarding_mode("eth0")
         mock_client.send_message.assert_called_once_with({"type": "ping"})
 
-    def test_per_interface_detection(self, manager_ctx, sys_net):
+    def test_per_interface_detection(self, manager_ctx):
         """Different interfaces can have different modes."""
         mgr, *_ = manager_ctx
-        d1 = _xdp_dir(sys_net, "eth0")
-        (d1 / "drv").mkdir()
-        d2 = _xdp_dir(sys_net, "eth1")
-        (d2 / "skb").mkdir()
-        (sys_net / "eth2").mkdir()   # no xdp dir
-
-        assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_NATIVE
-        assert mgr.detect_forwarding_mode("eth1") == ForwardingMode.XDP_GENERIC
-        assert mgr.detect_forwarding_mode("eth2") == ForwardingMode.KERNEL
+        mgr._available = True
+        with _make_ip_mock({
+            "eth0": _XDP_ATTACHED_DRV,
+            "eth1": _XDP_ATTACHED_SKB,
+            "eth2": None,
+        }):
+            assert mgr.detect_forwarding_mode("eth0") == ForwardingMode.XDP_NATIVE
+            assert mgr.detect_forwarding_mode("eth1") == ForwardingMode.XDP_GENERIC
+            assert mgr.detect_forwarding_mode("eth2") == ForwardingMode.KERNEL
 
 
 # ---------------------------------------------------------------------------

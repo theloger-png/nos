@@ -1,7 +1,8 @@
 """PFE manager — single entry point for all PFE operations in NOS."""
 import enum
-import pathlib
 from typing import Optional
+
+from pyroute2 import IPRoute
 
 from nos.pfe.fib import FIBManager
 from nos.pfe.ipc import PFEClient, PFEError
@@ -11,7 +12,8 @@ from nos.utils.logger import get_logger
 log = get_logger(__name__)
 
 _STATS_POLL_INTERVAL = 30.0
-_SYS_NET = pathlib.Path("/sys/class/net")
+_XDP_ATTACHED_DRV = "xdpdrv"
+_XDP_ATTACHED_SKB = "xdpgeneric"
 
 
 class ForwardingMode(enum.Enum):
@@ -85,14 +87,12 @@ class PFEManager:
     def detect_forwarding_mode(self, ifname: str) -> ForwardingMode:
         """Detect the active forwarding mode for *ifname*.
 
-        Steps:
         1. Returns KERNEL immediately if is_available() is False.
         2. Sends a ping to confirm the PFE is responsive.
-        3. Reads /sys/class/net/<ifname>/xdp/ to identify the XDP mode:
-             xdp/drv exists  → XDP_NATIVE  (driver / native mode)
-             xdp/skb exists  → XDP_GENERIC (generic / SKB mode)
-             xdp/ dir exists but no mode subdir → XDP_GENERIC (PFE default)
-             no xdp/ dir     → KERNEL
+        3. Uses pyroute2 IPRoute to query the IFLA_XDP link attribute:
+             'xdpdrv'     → XDP_NATIVE
+             'xdpgeneric' → XDP_GENERIC
+             'none' or no IFLA_XDP → KERNEL
         """
         if not self._available:
             return ForwardingMode.KERNEL
@@ -106,12 +106,20 @@ class PFEManager:
             log.warning("PFE ping failed for ifname=%s: %s", ifname, exc)
             return ForwardingMode.KERNEL
 
-        xdp_dir = _SYS_NET / ifname / "xdp"
-        if not xdp_dir.is_dir():
+        try:
+            with IPRoute() as ip:
+                links = ip.link("get", ifname=ifname)
+                if not links:
+                    return ForwardingMode.KERNEL
+                xdp = links[0].get_attr("IFLA_XDP")
+                if xdp is None:
+                    return ForwardingMode.KERNEL
+                attached = xdp.get_attr("XDP_ATTACHED")
+                if attached == _XDP_ATTACHED_DRV:
+                    return ForwardingMode.XDP_NATIVE
+                if attached == _XDP_ATTACHED_SKB:
+                    return ForwardingMode.XDP_GENERIC
+                return ForwardingMode.KERNEL
+        except Exception as exc:
+            log.warning("XDP detection failed for ifname=%s: %s", ifname, exc)
             return ForwardingMode.KERNEL
-        if (xdp_dir / "drv").exists():
-            return ForwardingMode.XDP_NATIVE
-        if (xdp_dir / "skb").exists():
-            return ForwardingMode.XDP_GENERIC
-        # xdp/ dir present but no mode subdir — PFE defaults to generic
-        return ForwardingMode.XDP_GENERIC

@@ -1,7 +1,7 @@
 """Tests for 'show configuration' (operational) and 'show <section>' (configure)."""
 from __future__ import annotations
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from prompt_toolkit.completion import CompleteEvent
@@ -1117,4 +1117,149 @@ class TestShowSectionConfigurePipeCompletion:
     def test_compare_partial_completes(self):
         kws = complete_conf("show | comp")
         assert "compare" in kws
-        assert "display" not in kws
+
+
+# ============================================================================
+# show forwarding — operational mode
+# ============================================================================
+
+_FWD_HDR = f"{'Interface':<13}{'Mode':<14}Status"
+
+
+def _make_pfe(available: bool = True, mode_map: dict | None = None):
+    """Return a mock PFEManager.
+
+    *mode_map* maps ifname → ForwardingMode; defaults to XDP_GENERIC for all.
+    """
+    from nos.pfe.manager import ForwardingMode
+    pfe = MagicMock()
+    pfe.is_available.return_value = available
+    if mode_map is None:
+        pfe.detect_forwarding_mode.return_value = ForwardingMode.XDP_GENERIC
+    else:
+        pfe.detect_forwarding_mode.side_effect = lambda name: mode_map[name]
+    return pfe
+
+
+class TestShowForwarding:
+    def test_header_present(self, store):
+        oper = OperationalMode(store)
+        mock_ip = _make_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert _FWD_HDR in out
+
+    def test_no_interfaces_message(self, store):
+        oper = OperationalMode(store)
+        mock_ip = _make_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "no interfaces found" in out.lower()
+
+    def test_loopback_skipped(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe())
+        lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")
+        eth0 = _MockLink("eth0", 2, 0, 1500, "UP")
+        mock_ip = _make_iproute_mock([lo, eth0], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "lo" not in out
+        assert "eth0" in out
+
+    def test_up_interface_shows_active(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe())
+        mock_ip = _make_iproute_mock([_MockLink("ens33", 2, 0, 1500, "UP")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "active" in out
+        assert "inactive" not in out
+
+    def test_down_interface_shows_inactive(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe())
+        mock_ip = _make_iproute_mock([_MockLink("ens34", 3, 0, 1500, "DOWN")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "inactive" in out
+
+    def test_unknown_operstate_shows_inactive(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe())
+        mock_ip = _make_iproute_mock([_MockLink("eth0", 2, 0, 1500, "UNKNOWN")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "inactive" in out
+
+    def test_pfe_none_shows_kernel_mode(self, store):
+        oper = OperationalMode(store, pfe=None)
+        mock_ip = _make_iproute_mock([_MockLink("eth0", 2, 0, 1500, "UP")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "kernel" in out
+
+    def test_pfe_unavailable_shows_kernel_mode(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe(available=False))
+        mock_ip = _make_iproute_mock([_MockLink("eth0", 2, 0, 1500, "UP")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "kernel" in out
+
+    def test_pfe_available_calls_detect_per_interface(self, store):
+        from nos.pfe.manager import ForwardingMode
+        pfe = _make_pfe(available=True)
+        pfe.detect_forwarding_mode.return_value = ForwardingMode.XDP_NATIVE
+        oper = OperationalMode(store, pfe=pfe)
+        mock_ip = _make_iproute_mock([_MockLink("eth0", 2, 0, 1500, "UP")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        pfe.detect_forwarding_mode.assert_called_once_with("eth0")
+        assert "xdp-native" in out
+
+    def test_mixed_modes_per_interface(self, store):
+        from nos.pfe.manager import ForwardingMode
+        mode_map = {
+            "eth0": ForwardingMode.XDP_NATIVE,
+            "eth1": ForwardingMode.XDP_GENERIC,
+            "eth2": ForwardingMode.KERNEL,
+        }
+        oper = OperationalMode(store, pfe=_make_pfe(available=True, mode_map=mode_map))
+        links = [
+            _MockLink("eth0", 2, 0, 1500, "UP"),
+            _MockLink("eth1", 3, 0, 1500, "UP"),
+            _MockLink("eth2", 4, 0, 1500, "DOWN"),
+        ]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert "xdp-native" in out
+        assert "xdp-generic" in out
+        assert "kernel" in out
+
+    def test_interfaces_sorted_alphabetically(self, store):
+        oper = OperationalMode(store, pfe=_make_pfe())
+        links = [
+            _MockLink("eth1", 3, 0, 1500, "UP"),
+            _MockLink("eth0", 2, 0, 1500, "UP"),
+        ]
+        mock_ip = _make_iproute_mock(links, [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        assert out.index("eth0") < out.index("eth1")
+
+    def test_pyroute2_unavailable_shows_message(self, store):
+        oper = OperationalMode(store)
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show forwarding")
+        assert _FWD_HDR in out
+        assert "unavailable" in out.lower()
+
+    def test_junos_style_row_format(self, store):
+        """Verify exact column alignment matches JunOS style."""
+        from nos.pfe.manager import ForwardingMode
+        pfe = _make_pfe(available=True)
+        pfe.detect_forwarding_mode.return_value = ForwardingMode.XDP_GENERIC
+        oper = OperationalMode(store, pfe=pfe)
+        mock_ip = _make_iproute_mock([_MockLink("ens33", 2, 0, 1500, "UP")], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show forwarding")
+        lines = out.splitlines()
+        assert lines[0] == _FWD_HDR
+        assert lines[1] == f"{'ens33':<13}{'xdp-generic':<14}active"

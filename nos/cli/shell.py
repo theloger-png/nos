@@ -78,7 +78,7 @@ class NOSShell:
         self._history_file = history_file or Path.home() / ".nos_history"
 
         self.mode = CLIMode.OPERATIONAL
-        self.oper_handler = OperationalMode(self.store)
+        self.oper_handler = OperationalMode(self.store, pfe=pfe)
         self.conf_handler = ConfigureMode(self.store, self.commit_engine)
 
     # ------------------------------------------------------------------

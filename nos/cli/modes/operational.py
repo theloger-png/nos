@@ -25,6 +25,7 @@ from rich.text import Text
 from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult, resolve_prefix
 from nos.config.serializer import to_set_commands
 from nos.config.store import ConfigStore
+from nos.pfe.manager import ForwardingMode, PFEManager
 
 console = Console()
 _parser = CommandParser()
@@ -141,8 +142,9 @@ def _parse_traceroute_opts(
 class OperationalMode:
     """Execute commands in operational mode."""
 
-    def __init__(self, store: ConfigStore) -> None:
+    def __init__(self, store: ConfigStore, pfe: Optional[PFEManager] = None) -> None:
         self.store = store
+        self._pfe = pfe
 
     def execute(self, line: str) -> Optional[str]:
         """Parse and execute one command line.
@@ -494,11 +496,42 @@ class OperationalMode:
         return "\n".join(lines)
 
     def _show_forwarding(self) -> str:
-        return (
-            "Interface    Mode          Status\n"
-            "─────────────────────────────────\n"
-            "(requires PFE integration for live data)\n"
-        )
+        if IPRoute is None:
+            return (
+                f"{'Interface':<13}{'Mode':<14}Status\n"
+                "(pyroute2 unavailable)"
+            )
+
+        try:
+            with IPRoute() as ipr:
+                links = ipr.get_links()
+        except Exception as exc:
+            _LOG.warning("kernel interface read failed (%s)", exc)
+            return "error: could not read kernel interfaces"
+
+        pfe_active = self._pfe is not None and self._pfe.is_available()
+        header = f"{'Interface':<13}{'Mode':<14}Status"
+        rows: list[str] = []
+
+        for link in sorted(links, key=lambda l: l.get_attr("IFLA_IFNAME") or ""):
+            name = link.get_attr("IFLA_IFNAME")
+            if not name:
+                continue
+            if link["flags"] & _IFF_LOOPBACK:
+                continue
+
+            operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
+            status = "active" if operstate == "UP" else "inactive"
+            mode = (
+                self._pfe.detect_forwarding_mode(name)
+                if pfe_active
+                else ForwardingMode.KERNEL
+            )
+            rows.append(f"{name:<13}{mode.value:<14}{status}")
+
+        if not rows:
+            return header + "\n(no interfaces found)"
+        return "\n".join([header] + rows)
 
     def _show_configuration(self, args: list[str]) -> str:
         """Show running config in tree format, optionally filtered to a section."""
