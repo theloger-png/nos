@@ -17,6 +17,13 @@ except ImportError:  # pragma: no cover
 _IFF_LOOPBACK = 0x8   # Linux IFF_LOOPBACK from <net/if.h>
 _NUD_PERMANENT = 0x80  # Linux NUD_PERMANENT — static/self FDB entry
 
+# NUD states kept for ARP display (kernel neighbour cache)
+_NUD_REACHABLE  = 0x02
+_NUD_STALE      = 0x04
+_NUD_DELAY      = 0x08
+_NUD_PROBE      = 0x10
+_NUD_ARP_VALID  = _NUD_REACHABLE | _NUD_STALE | _NUD_DELAY | _NUD_PROBE | _NUD_PERMANENT
+
 _LOG = logging.getLogger(__name__)
 
 from rich.console import Console
@@ -32,7 +39,7 @@ console = Console()
 _parser = CommandParser()
 
 _SHOW_SUBCMDS: list[str] = [
-    "bgp", "configuration", "ethernet-switching", "forwarding", "interfaces",
+    "arp", "bgp", "configuration", "ethernet-switching", "forwarding", "interfaces",
     "isis", "route", "system", "vlans",
 ]
 
@@ -191,6 +198,8 @@ class OperationalMode:
             return f"error: {err}"
 
         match sub:
+            case "arp":
+                output = self._show_arp(sub_args)
             case "interfaces":
                 output = self._show_interfaces(sub_args)
             case "route":
@@ -218,6 +227,7 @@ class OperationalMode:
     def _show_help(self) -> str:
         return (
             "Possible completions:\n"
+            "  arp                 Show ARP table\n"
             "  interfaces          Show interface status and counters\n"
             "  ethernet-switching  Show Ethernet switching table (bridge FDB / MAC table)\n"
             "  route               Show routing table\n"
@@ -228,6 +238,90 @@ class OperationalMode:
             "  forwarding          Show PFE forwarding mode\n"
             "  configuration       Show running configuration (tree format; use | display set for set commands)\n"
         )
+
+    # ------------------------------------------------------------------
+    # show arp
+    # ------------------------------------------------------------------
+
+    def _read_arp_entries(self) -> Optional[list[dict]]:
+        """Read ARP table from the kernel neighbour cache via pyroute2.
+
+        Returns None when pyroute2 is unavailable or a kernel error occurs.
+        Skips entries with incomplete/failed/no-arp NUD states.
+        """
+        if IPRoute is None:
+            return None
+
+        try:
+            with IPRoute() as ipr:
+                links = ipr.get_links()
+                neighbours = ipr.get_neighbours(family=2)  # AF_INET
+        except Exception as exc:
+            _LOG.warning("ARP table read failed (%s)", exc)
+            return None
+
+        idx_to_name: dict[int, str] = {}
+        for link in links:
+            name = link.get_attr("IFLA_IFNAME")
+            if name:
+                idx_to_name[link["index"]] = name
+
+        entries: list[dict] = []
+        for nbr in neighbours:
+            if not (nbr["state"] & _NUD_ARP_VALID):
+                continue
+            ip = nbr.get_attr("NDA_DST")
+            mac = nbr.get_attr("NDA_LLADDR")
+            if not ip or not mac:
+                continue
+            ifindex = nbr["ifindex"]
+            entries.append({
+                "mac": mac,
+                "ip": ip,
+                "ifname": idx_to_name.get(ifindex, f"if{ifindex}"),
+            })
+        return entries
+
+    def _render_arp_table(self, entries: list[dict]) -> str:
+        header = f"{'MAC Address':<18}{'Address':<16}{'Name':<16}{'Interface':<13}Flags"
+        lines = [header]
+        for e in sorted(entries, key=lambda x: x["ip"]):
+            lines.append(
+                f"{e['mac']:<18}{e['ip']:<16}{e['ip']:<16}{e['ifname']:<13}none"
+            )
+        lines.append(f"Total entries: {len(entries)}")
+        return "\n".join(lines)
+
+    def _show_arp(self, args: list[str]) -> str:
+        filter_ifname: Optional[str] = None
+        filter_ip: Optional[str] = None
+
+        i = 0
+        while i < len(args):
+            tok = args[i].lower()
+            if tok == "interface":
+                if i + 1 >= len(args):
+                    return "error: 'interface' requires an interface name"
+                filter_ifname = args[i + 1]
+                i += 2
+            elif tok == "hostname":
+                if i + 1 >= len(args):
+                    return "error: 'hostname' requires an IP address"
+                filter_ip = args[i + 1]
+                i += 2
+            else:
+                return f"error: unknown arp option '{args[i]}'"
+
+        entries = self._read_arp_entries()
+        if entries is None:
+            return "error: could not read ARP table (pyroute2 unavailable or error)"
+
+        if filter_ifname is not None:
+            entries = [e for e in entries if e["ifname"] == filter_ifname]
+        if filter_ip is not None:
+            entries = [e for e in entries if e["ip"] == filter_ip]
+
+        return self._render_arp_table(entries)
 
     def _show_interfaces(self, args: list[str]) -> str:
         sub = args[0].lower() if args else ""

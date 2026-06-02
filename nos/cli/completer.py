@@ -560,6 +560,7 @@ _TRACEROUTE_OPTS: dict[str, tuple[Optional[str], str]] = {
 }
 
 _SHOW_OPER_ARGS = {
+    "arp": "Show ARP table",
     "interfaces": "Show interface status and counters",
     "ethernet-switching": "Show Ethernet switching table (bridge FDB / MAC table)",
     "route": "Show routing table",
@@ -569,6 +570,11 @@ _SHOW_OPER_ARGS = {
     "system": "Show system information",
     "forwarding": "Show PFE forwarding mode",
     "configuration": "Show running configuration (tree format)",
+}
+
+_ARP_SUBCMDS: dict[str, str] = {
+    "interface": "Filter by interface name",
+    "hostname":  "Filter by IP address",
 }
 
 _ETH_SWITCH_TABLE_SUBCMDS: dict[str, str] = {
@@ -734,6 +740,22 @@ class NOSCompleter(Completer):
             return
 
         resolved_sub, _ = resolve_prefix(rest[0].lower(), list(_SHOW_OPER_ARGS.keys()))
+
+        # "show arp [interface <if>|hostname <ip>]"
+        if resolved_sub == "arp":
+            arp_rest = rest[1:]
+            arp_prefix = "" if completing_new else (arp_rest[-1] if arp_rest else "")
+            if not arp_rest or (len(arp_rest) == 1 and not completing_new):
+                for kw, meta in _ARP_SUBCMDS.items():
+                    if kw.startswith(arp_prefix):
+                        yield Completion(kw, -len(arp_prefix), display_meta=meta)
+            elif completing_new:
+                last_kw = arp_rest[-1].lower()
+                if last_kw == "interface":
+                    yield Completion("<interface-name>", display_meta="Interface name")
+                elif last_kw == "hostname":
+                    yield Completion("<ip-address>", display_meta="IP address")
+            return
 
         # "show interfaces [terse|description]"
         if resolved_sub == "interfaces":

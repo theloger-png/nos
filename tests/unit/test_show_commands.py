@@ -1717,3 +1717,353 @@ class TestShowEthernetSwitchingCompletion:
     def test_show_ethernet_switching_table_vlan_space_offers_hint(self):
         kws = complete_oper("show ethernet-switching table vlan ")
         assert any("<vlan-name-or-id>" in k for k in kws)
+
+
+# ============================================================================
+# show arp — helpers
+# ============================================================================
+
+_NUD_REACHABLE_T = 0x02
+_NUD_STALE_T     = 0x04
+_NUD_DELAY_T     = 0x08
+_NUD_PROBE_T     = 0x10
+_NUD_PERMANENT_T = 0x80
+_NUD_INCOMPLETE  = 0x01
+_NUD_FAILED      = 0x20
+_NUD_NOARP       = 0x40
+
+
+class _MockNeighbour:
+    """Stand-in for a pyroute2 ndmsg ARP/neighbour entry."""
+
+    def __init__(
+        self,
+        ip: str,
+        mac: str,
+        ifindex: int,
+        state: int = _NUD_REACHABLE_T,
+        family: int = 2,
+    ) -> None:
+        self._a: dict = {"NDA_DST": ip, "NDA_LLADDR": mac}
+        self._i: dict = {"ifindex": ifindex, "state": state, "family": family}
+
+    def get_attr(self, key: str):
+        return self._a.get(key)
+
+    def __getitem__(self, key: str):
+        return self._i[key]
+
+
+def _make_arp_iproute_mock(links: list, neighbours: list) -> Mock:
+    """Return an IPRoute mock that supports get_links and get_neighbours."""
+    instance = Mock()
+    instance.__enter__ = Mock(return_value=instance)
+    instance.__exit__ = Mock(return_value=False)
+    instance.get_links.return_value = links
+    instance.get_neighbours.return_value = neighbours
+    return Mock(return_value=instance)
+
+
+# ============================================================================
+# show arp — handler
+# ============================================================================
+
+class TestShowArp:
+
+    # ------------------------------------------------------------------
+    # Basic output
+    # ------------------------------------------------------------------
+
+    def test_header_present(self, oper):
+        mock_ip = _make_arp_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "MAC Address" in out
+        assert "Address" in out
+        assert "Interface" in out
+        assert "Flags" in out
+
+    def test_total_line_present(self, oper):
+        mock_ip = _make_arp_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "Total entries: 0" in out
+
+    def test_single_reachable_entry(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "00:50:56:95:0b:2b" in out
+        assert "172.18.4.41" in out
+        assert "ens33" in out
+        assert "none" in out
+        assert "Total entries: 1" in out
+
+    def test_multiple_entries(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T),
+            _MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 3, _NUD_STALE_T),
+        ]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "00:50:56:95:0b:2b" in out
+        assert "00:50:56:95:ba:0f" in out
+        assert "ens33" in out
+        assert "ens34" in out
+        assert "Total entries: 2" in out
+
+    def test_entries_sorted_by_ip(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T),
+            _MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_T),
+        ]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert out.index("10.0.0.2") < out.index("172.18.4.41")
+
+    def test_exact_column_format(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        data_line = [ln for ln in out.splitlines() if "00:50:56" in ln][0]
+        assert data_line == (
+            f"{'00:50:56:95:0b:2b':<18}{'172.18.4.41':<16}"
+            f"{'172.18.4.41':<16}{'ens33':<13}none"
+        )
+
+    # ------------------------------------------------------------------
+    # NUD state filtering
+    # ------------------------------------------------------------------
+
+    def test_stale_entry_shown(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_STALE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_delay_entry_shown(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_DELAY_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_probe_entry_shown(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_PROBE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_permanent_entry_shown(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_PERMANENT_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_incomplete_entry_skipped(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_INCOMPLETE)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" not in out
+        assert "Total entries: 0" in out
+
+    def test_failed_entry_skipped(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_FAILED)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" not in out
+
+    def test_noarp_entry_skipped(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_NOARP)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "aa:bb:cc:dd:ee:ff" not in out
+
+    def test_entry_without_mac_skipped(self, oper):
+        """Entries with no NDA_LLADDR (e.g. incomplete) are skipped."""
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbr = _MockNeighbour("10.0.0.1", "aa:bb:cc:dd:ee:ff", 2, _NUD_REACHABLE_T)
+        nbr._a["NDA_LLADDR"] = None  # strip the MAC
+        mock_ip = _make_arp_iproute_mock(links, [nbr])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "Total entries: 0" in out
+
+    # ------------------------------------------------------------------
+    # Interface name resolution
+    # ------------------------------------------------------------------
+
+    def test_ifindex_resolved_to_name(self, oper):
+        links = [_MockLink("ens34", 3, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "ens34" in out
+
+    def test_unknown_ifindex_shown_as_ifN(self, oper):
+        """When no link matches the ifindex, fall back to 'if<N>' notation."""
+        nbrs = [_MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 99, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp")
+        assert "if99" in out
+
+    # ------------------------------------------------------------------
+    # Filter by interface
+    # ------------------------------------------------------------------
+
+    def test_filter_interface_keeps_matching(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T),
+            _MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_T),
+        ]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp interface ens33")
+        assert "00:50:56:95:0b:2b" in out
+        assert "00:50:56:95:ba:0f" not in out
+        assert "Total entries: 1" in out
+
+    def test_filter_interface_no_match(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp interface ens99")
+        assert "Total entries: 0" in out
+
+    def test_filter_interface_missing_arg_returns_error(self, oper):
+        mock_ip = _make_arp_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp interface")
+        assert "error" in out.lower()
+
+    # ------------------------------------------------------------------
+    # Filter by hostname (IP)
+    # ------------------------------------------------------------------
+
+    def test_filter_hostname_keeps_matching(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T),
+            _MockNeighbour("10.0.0.2", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_T),
+        ]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp hostname 172.18.4.41")
+        assert "00:50:56:95:0b:2b" in out
+        assert "00:50:56:95:ba:0f" not in out
+        assert "Total entries: 1" in out
+
+    def test_filter_hostname_no_match(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("172.18.4.41", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_T)]
+        mock_ip = _make_arp_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp hostname 1.2.3.4")
+        assert "Total entries: 0" in out
+
+    def test_filter_hostname_missing_arg_returns_error(self, oper):
+        mock_ip = _make_arp_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp hostname")
+        assert "error" in out.lower()
+
+    # ------------------------------------------------------------------
+    # Error paths
+    # ------------------------------------------------------------------
+
+    def test_unknown_option_returns_error(self, oper):
+        mock_ip = _make_arp_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show arp bogus")
+        assert "error" in out.lower()
+
+    def test_pyroute2_unavailable_returns_error(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show arp")
+        assert "error" in out.lower()
+
+    def test_kernel_error_returns_error(self, oper):
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.get_links.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show arp")
+        assert "error" in out.lower()
+
+
+# ============================================================================
+# show arp — tab completion
+# ============================================================================
+
+class TestShowArpCompletion:
+    def test_show_space_offers_arp(self):
+        kws = complete_oper("show ")
+        assert "arp" in kws
+
+    def test_show_a_partial_completes_arp(self):
+        kws = complete_oper("show a")
+        assert "arp" in kws
+
+    def test_show_arp_space_offers_interface(self):
+        kws = complete_oper("show arp ")
+        assert "interface" in kws
+
+    def test_show_arp_space_offers_hostname(self):
+        kws = complete_oper("show arp ")
+        assert "hostname" in kws
+
+    def test_show_arp_partial_i_offers_interface(self):
+        kws = complete_oper("show arp i")
+        assert "interface" in kws
+        assert "hostname" not in kws
+
+    def test_show_arp_partial_h_offers_hostname(self):
+        kws = complete_oper("show arp h")
+        assert "hostname" in kws
+        assert "interface" not in kws
+
+    def test_show_arp_interface_space_offers_hint(self):
+        kws = complete_oper("show arp interface ")
+        assert any("<interface-name>" in k for k in kws)
+
+    def test_show_arp_hostname_space_offers_hint(self):
+        kws = complete_oper("show arp hostname ")
+        assert any("<ip-address>" in k for k in kws)
