@@ -561,6 +561,7 @@ _TRACEROUTE_OPTS: dict[str, tuple[Optional[str], str]] = {
 
 _SHOW_OPER_ARGS = {
     "arp": "Show ARP table",
+    "ipv6": "Show IPv6 information",
     "interfaces": "Show interface status and counters",
     "ethernet-switching": "Show Ethernet switching table (bridge FDB / MAC table)",
     "route": "Show routing table",
@@ -755,6 +756,30 @@ class NOSCompleter(Completer):
                     yield Completion("<interface-name>", display_meta="Interface name")
                 elif last_kw == "hostname":
                     yield Completion("<ip-address>", display_meta="IP address")
+            return
+
+        # "show ipv6 neighbors [interface <if>]"
+        if resolved_sub == "ipv6":
+            ipv6_rest = rest[1:]
+            ipv6_prefix = "" if completing_new else (ipv6_rest[-1] if ipv6_rest else "")
+            if not ipv6_rest or (len(ipv6_rest) == 1 and not completing_new):
+                if "neighbors".startswith(ipv6_prefix):
+                    yield Completion(
+                        "neighbors", -len(ipv6_prefix),
+                        display_meta="Show IPv6 neighbor table",
+                    )
+                return
+            if ipv6_rest[0].lower() == "neighbors":
+                nbr_rest = ipv6_rest[1:]
+                nbr_prefix = "" if completing_new else (nbr_rest[-1] if nbr_rest else "")
+                if not nbr_rest or (len(nbr_rest) == 1 and not completing_new):
+                    if "interface".startswith(nbr_prefix):
+                        yield Completion(
+                            "interface", -len(nbr_prefix),
+                            display_meta="Filter by interface name",
+                        )
+                elif completing_new and nbr_rest[-1].lower() == "interface":
+                    yield Completion("<interface-name>", display_meta="Interface name")
             return
 
         # "show interfaces [terse|description]"

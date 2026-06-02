@@ -2067,3 +2067,322 @@ class TestShowArpCompletion:
     def test_show_arp_hostname_space_offers_hint(self):
         kws = complete_oper("show arp hostname ")
         assert any("<ip-address>" in k for k in kws)
+
+
+# ============================================================================
+# show ipv6 neighbors — handler
+# ============================================================================
+
+# NUD constants reused from operational module (mirrors _NUD_* in operational.py)
+_NUD_REACHABLE_V6  = 0x02
+_NUD_STALE_V6      = 0x04
+_NUD_DELAY_V6      = 0x08
+_NUD_PROBE_V6      = 0x10
+_NUD_PERMANENT_V6  = 0x80
+_NUD_INCOMPLETE_V6 = 0x01
+_NUD_FAILED_V6     = 0x20
+_NUD_NOARP_V6      = 0x40
+
+
+def _make_ipv6_nbr_iproute_mock(links: list, neighbours: list) -> Mock:
+    """Return an IPRoute mock for IPv6 neighbour tests (same layout as ARP mock)."""
+    instance = Mock()
+    instance.__enter__ = Mock(return_value=instance)
+    instance.__exit__ = Mock(return_value=False)
+    instance.get_links.return_value = links
+    instance.get_neighbours.return_value = neighbours
+    return Mock(return_value=instance)
+
+
+class TestShowIPv6Neighbors:
+
+    # ------------------------------------------------------------------
+    # show ipv6 (sub-command dispatch)
+    # ------------------------------------------------------------------
+
+    def test_show_ipv6_no_args_shows_help(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6")
+        assert "neighbors" in out.lower()
+
+    def test_show_ipv6_unknown_sub_returns_error(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 bogus")
+        assert "error" in out.lower()
+
+    def test_show_ipv6_neighbors_prefix_resolves(self, oper):
+        """'show ipv6 neigh' should resolve to 'neighbors'."""
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neigh")
+        assert "error" not in out.lower()
+        assert "IPv6 Address" in out
+
+    # ------------------------------------------------------------------
+    # Basic output
+    # ------------------------------------------------------------------
+
+    def test_header_present(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "IPv6 Address" in out
+        assert "MAC Address" in out
+        assert "Interface" in out
+        assert "State" in out
+
+    def test_total_line_present(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "Total entries: 0" in out
+
+    def test_single_reachable_entry(self, oper):
+        links = [_MockLink("ens34", 3, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour(
+            "fe80::250:56ff:fe95:ba0f", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_V6
+        )]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "fe80::250:56ff:fe95:ba0f" in out
+        assert "00:50:56:95:ba:0f" in out
+        assert "ens34" in out
+        assert "reachable" in out
+        assert "Total entries: 1" in out
+
+    def test_multiple_entries(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("fe80::250:56ff:fe95:0b2b", "00:50:56:95:0b:2b", 2, _NUD_REACHABLE_V6),
+            _MockNeighbour("fe80::250:56ff:fe95:ba0f", "00:50:56:95:ba:0f", 3, _NUD_STALE_V6),
+        ]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "00:50:56:95:0b:2b" in out
+        assert "00:50:56:95:ba:0f" in out
+        assert "ens33" in out
+        assert "ens34" in out
+        assert "Total entries: 2" in out
+
+    def test_entries_sorted_by_ip(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("fe80::2", "aa:bb:cc:dd:ee:02", 2, _NUD_REACHABLE_V6),
+            _MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:01", 3, _NUD_REACHABLE_V6),
+        ]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert out.index("fe80::1") < out.index("fe80::2")
+
+    def test_exact_column_format(self, oper):
+        links = [_MockLink("ens34", 3, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour(
+            "fe80::250:56ff:fe95:ba0f", "00:50:56:95:ba:0f", 3, _NUD_REACHABLE_V6
+        )]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        data_line = [ln for ln in out.splitlines() if "fe80::" in ln][0]
+        assert data_line == (
+            f"{'fe80::250:56ff:fe95:ba0f':<41}"
+            f"{'00:50:56:95:ba:0f':<19}"
+            f"{'ens34':<13}"
+            "reachable"
+        )
+
+    # ------------------------------------------------------------------
+    # NUD state mapping
+    # ------------------------------------------------------------------
+
+    def test_stale_state_shown(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_STALE_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "stale" in out
+
+    def test_delay_state_shown(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_DELAY_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "delay" in out
+
+    def test_probe_state_shown(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_PROBE_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "probe" in out
+
+    def test_permanent_state_shown(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_PERMANENT_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "permanent" in out
+
+    def test_incomplete_state_shown(self, oper):
+        """Incomplete entries (no MAC yet) are included with state 'incomplete'."""
+        nbr = _MockNeighbour("fe80::1", "", 2, _NUD_INCOMPLETE_V6)
+        nbr._a["NDA_LLADDR"] = None
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [nbr])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "fe80::1" in out
+        assert "incomplete" in out
+        assert "Total entries: 1" in out
+
+    def test_failed_state_shown(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_FAILED_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "failed" in out
+
+    def test_noarp_entry_skipped(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [
+            _MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_NOARP_V6),
+            _MockNeighbour("fe80::2", "aa:bb:cc:dd:ee:00", 2, _NUD_REACHABLE_V6),
+        ]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "aa:bb:cc:dd:ee:ff" not in out
+        assert "aa:bb:cc:dd:ee:00" in out
+        assert "Total entries: 1" in out
+
+    def test_entry_without_ip_skipped(self, oper):
+        nbr = _MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_REACHABLE_V6)
+        nbr._a["NDA_DST"] = None
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [nbr])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "Total entries: 0" in out
+
+    # ------------------------------------------------------------------
+    # Interface name resolution
+    # ------------------------------------------------------------------
+
+    def test_ifindex_resolved_to_name(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 2, _NUD_REACHABLE_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "ens33" in out
+
+    def test_unknown_ifindex_shown_as_ifN(self, oper):
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:ff", 77, _NUD_REACHABLE_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock([], nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors")
+        assert "if77" in out
+
+    # ------------------------------------------------------------------
+    # Filter by interface
+    # ------------------------------------------------------------------
+
+    def test_filter_interface_keeps_matching(self, oper):
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        nbrs = [
+            _MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:01", 2, _NUD_REACHABLE_V6),
+            _MockNeighbour("fe80::2", "aa:bb:cc:dd:ee:02", 3, _NUD_REACHABLE_V6),
+        ]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors interface ens33")
+        assert "aa:bb:cc:dd:ee:01" in out
+        assert "aa:bb:cc:dd:ee:02" not in out
+        assert "Total entries: 1" in out
+
+    def test_filter_interface_no_match(self, oper):
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        nbrs = [_MockNeighbour("fe80::1", "aa:bb:cc:dd:ee:01", 2, _NUD_REACHABLE_V6)]
+        mock_ip = _make_ipv6_nbr_iproute_mock(links, nbrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors interface ens99")
+        assert "Total entries: 0" in out
+
+    def test_filter_interface_missing_arg_returns_error(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors interface")
+        assert "error" in out.lower()
+
+    # ------------------------------------------------------------------
+    # Error paths
+    # ------------------------------------------------------------------
+
+    def test_unknown_neighbors_option_returns_error(self, oper):
+        mock_ip = _make_ipv6_nbr_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ipv6 neighbors bogus")
+        assert "error" in out.lower()
+
+    def test_pyroute2_unavailable_returns_error(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ipv6 neighbors")
+        assert "error" in out.lower()
+
+    def test_kernel_error_returns_error(self, oper):
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.get_links.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show ipv6 neighbors")
+        assert "error" in out.lower()
+
+
+# ============================================================================
+# show ipv6 neighbors — tab completion
+# ============================================================================
+
+class TestShowIPv6NeighborsCompletion:
+    def test_show_space_offers_ipv6(self):
+        kws = complete_oper("show ")
+        assert "ipv6" in kws
+
+    def test_show_ipv_partial_completes_ipv6(self):
+        kws = complete_oper("show ipv")
+        assert "ipv6" in kws
+
+    def test_show_ipv6_space_offers_neighbors(self):
+        kws = complete_oper("show ipv6 ")
+        assert "neighbors" in kws
+
+    def test_show_ipv6_partial_n_offers_neighbors(self):
+        kws = complete_oper("show ipv6 n")
+        assert "neighbors" in kws
+
+    def test_show_ipv6_partial_ne_offers_neighbors(self):
+        kws = complete_oper("show ipv6 ne")
+        assert "neighbors" in kws
+
+    def test_show_ipv6_neighbors_space_offers_interface(self):
+        kws = complete_oper("show ipv6 neighbors ")
+        assert "interface" in kws
+
+    def test_show_ipv6_neighbors_partial_i_offers_interface(self):
+        kws = complete_oper("show ipv6 neighbors i")
+        assert "interface" in kws
+
+    def test_show_ipv6_neighbors_interface_space_offers_hint(self):
+        kws = complete_oper("show ipv6 neighbors interface ")
+        assert any("<interface-name>" in k for k in kws)

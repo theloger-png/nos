@@ -17,12 +17,26 @@ except ImportError:  # pragma: no cover
 _IFF_LOOPBACK = 0x8   # Linux IFF_LOOPBACK from <net/if.h>
 _NUD_PERMANENT = 0x80  # Linux NUD_PERMANENT — static/self FDB entry
 
-# NUD states kept for ARP display (kernel neighbour cache)
+# NUD states (kernel neighbour cache)
+_NUD_INCOMPLETE = 0x01
 _NUD_REACHABLE  = 0x02
 _NUD_STALE      = 0x04
 _NUD_DELAY      = 0x08
 _NUD_PROBE      = 0x10
+_NUD_FAILED     = 0x20
+_NUD_NOARP      = 0x40
 _NUD_ARP_VALID  = _NUD_REACHABLE | _NUD_STALE | _NUD_DELAY | _NUD_PROBE | _NUD_PERMANENT
+
+_NUD_STATE_NAMES: dict[int, str] = {
+    _NUD_INCOMPLETE: "incomplete",
+    _NUD_REACHABLE:  "reachable",
+    _NUD_STALE:      "stale",
+    _NUD_DELAY:      "delay",
+    _NUD_PROBE:      "probe",
+    _NUD_FAILED:     "failed",
+    _NUD_NOARP:      "noarp",
+    _NUD_PERMANENT:  "permanent",
+}
 
 _LOG = logging.getLogger(__name__)
 
@@ -40,7 +54,7 @@ _parser = CommandParser()
 
 _SHOW_SUBCMDS: list[str] = [
     "arp", "bgp", "configuration", "ethernet-switching", "forwarding", "interfaces",
-    "isis", "route", "system", "vlans",
+    "ipv6", "isis", "route", "system", "vlans",
 ]
 
 
@@ -200,6 +214,8 @@ class OperationalMode:
         match sub:
             case "arp":
                 output = self._show_arp(sub_args)
+            case "ipv6":
+                output = self._show_ipv6(sub_args)
             case "interfaces":
                 output = self._show_interfaces(sub_args)
             case "route":
@@ -228,6 +244,7 @@ class OperationalMode:
         return (
             "Possible completions:\n"
             "  arp                 Show ARP table\n"
+            "  ipv6                Show IPv6 information\n"
             "  interfaces          Show interface status and counters\n"
             "  ethernet-switching  Show Ethernet switching table (bridge FDB / MAC table)\n"
             "  route               Show routing table\n"
@@ -322,6 +339,92 @@ class OperationalMode:
             entries = [e for e in entries if e["ip"] == filter_ip]
 
         return self._render_arp_table(entries)
+
+    # ------------------------------------------------------------------
+    # show ipv6 neighbors
+    # ------------------------------------------------------------------
+
+    def _read_ipv6_neighbors(self) -> Optional[list[dict]]:
+        """Read IPv6 neighbour table from the kernel via pyroute2 (AF_INET6).
+
+        Returns None when pyroute2 is unavailable or a kernel error occurs.
+        NUD_NOARP entries are skipped; all other states are included.
+        """
+        if IPRoute is None:
+            return None
+
+        try:
+            with IPRoute() as ipr:
+                links = ipr.get_links()
+                neighbours = ipr.get_neighbours(family=10)  # AF_INET6
+        except Exception as exc:
+            _LOG.warning("IPv6 neighbor table read failed (%s)", exc)
+            return None
+
+        idx_to_name: dict[int, str] = {}
+        for link in links:
+            name = link.get_attr("IFLA_IFNAME")
+            if name:
+                idx_to_name[link["index"]] = name
+
+        entries: list[dict] = []
+        for nbr in neighbours:
+            state = nbr["state"]
+            if state & _NUD_NOARP:
+                continue
+            ip = nbr.get_attr("NDA_DST")
+            if not ip:
+                continue
+            mac = nbr.get_attr("NDA_LLADDR") or ""
+            ifindex = nbr["ifindex"]
+            entries.append({
+                "ip": ip,
+                "mac": mac,
+                "ifname": idx_to_name.get(ifindex, f"if{ifindex}"),
+                "state": _NUD_STATE_NAMES.get(state, f"0x{state:02x}"),
+            })
+        return entries
+
+    def _render_ipv6_neighbors(self, entries: list[dict]) -> str:
+        header = f"{'IPv6 Address':<41}{'MAC Address':<19}{'Interface':<13}State"
+        lines = [header]
+        for e in sorted(entries, key=lambda x: x["ip"]):
+            lines.append(
+                f"{e['ip']:<41}{e['mac']:<19}{e['ifname']:<13}{e['state']}"
+            )
+        lines.append(f"Total entries: {len(entries)}")
+        return "\n".join(lines)
+
+    def _show_ipv6_neighbors(self, args: list[str]) -> str:
+        filter_ifname: Optional[str] = None
+
+        i = 0
+        while i < len(args):
+            tok = args[i].lower()
+            if tok == "interface":
+                if i + 1 >= len(args):
+                    return "error: 'interface' requires an interface name"
+                filter_ifname = args[i + 1]
+                i += 2
+            else:
+                return f"error: unknown neighbors option '{args[i]}'"
+
+        entries = self._read_ipv6_neighbors()
+        if entries is None:
+            return "error: could not read IPv6 neighbor table (pyroute2 unavailable or error)"
+
+        if filter_ifname is not None:
+            entries = [e for e in entries if e["ifname"] == filter_ifname]
+
+        return self._render_ipv6_neighbors(entries)
+
+    def _show_ipv6(self, args: list[str]) -> str:
+        if not args:
+            return "Possible completions:\n  neighbors  Show IPv6 neighbor table\n"
+        sub, err = resolve_prefix(args[0].lower(), ["neighbors"])
+        if err:
+            return f"error: {err}"
+        return self._show_ipv6_neighbors(args[1:])
 
     def _show_interfaces(self, args: list[str]) -> str:
         sub = args[0].lower() if args else ""
