@@ -10,6 +10,8 @@ User=nos
 Group=nos
 Restart=on-failure
 RestartSec=3s
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
 
 StandardInput=tty
 StandardOutput=tty

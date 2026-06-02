@@ -16,6 +16,14 @@ class BaseDriver(ABC):
         """Delete a network interface."""
 
     @abstractmethod
+    def sync_interface_addresses(self, name: str, config: Dict[str, Any]) -> None:
+        """Sync IP addresses on an interface without changing state or attributes."""
+
+    @abstractmethod
+    def apply_subinterface(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
+        """Create or update a VLAN sub-interface <parent>.<unit_num>."""
+
+    @abstractmethod
     def apply_route(
         self,
         prefix: str,

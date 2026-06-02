@@ -241,6 +241,46 @@ class TestOperationalCompleter:
         kws = complete("traceroute ", CLIMode.OPERATIONAL)
         assert any("<host>" in k for k in kws)
 
+    # Abbreviated command dispatch
+    def test_abbreviated_command_dispatches_subcommands(self):
+        # 'sho ' should dispatch into show and return its sub-commands
+        kws = complete("sho ", CLIMode.OPERATIONAL)
+        assert "interfaces" in kws
+        assert "route" in kws
+
+    def test_abbreviated_command_with_abbreviated_subcommand(self):
+        # 'sho int' should complete 'interfaces' at the first-level filter
+        kws = complete("sho int", CLIMode.OPERATIONAL)
+        assert "interfaces" in kws
+
+    def test_abbreviated_show_interfaces_subcmds(self):
+        # 'show int ' should show terse/description sub-commands
+        kws = complete("show int ", CLIMode.OPERATIONAL)
+        assert "terse" in kws
+        assert "description" in kws
+
+    def test_abbreviated_show_abbreviated_interfaces_subcmds(self):
+        # 'sho int ' should also show terse/description sub-commands
+        kws = complete("sho int ", CLIMode.OPERATIONAL)
+        assert "terse" in kws
+        assert "description" in kws
+
+    def test_abbreviated_show_interfaces_partial_subcmd(self):
+        # 'show int ter' should complete to 'terse'
+        kws = complete("show int ter", CLIMode.OPERATIONAL)
+        assert "terse" in kws
+        assert "description" not in kws
+
+    def test_ambiguous_command_prefix_yields_nothing(self):
+        # 'e' matches both 'exit' and (in configure) multiple — in operational: exit only
+        # 't' matches traceroute only → should give subcommands
+        kws = complete("tr ", CLIMode.OPERATIONAL)
+        assert any("<host>" in k for k in kws)
+
+    def test_abbreviated_ping_dispatches(self):
+        kws = complete("pi ", CLIMode.OPERATIONAL)
+        assert any("<host>" in k for k in kws)
+
 
 # ============================================================================
 # NOSCompleter — configure mode (command keywords)
@@ -351,3 +391,88 @@ class TestConfigureSetCompletions:
         kws = complete("run ", CLIMode.CONFIGURE)
         assert "show" in kws
         assert "ping" in kws
+
+
+# ============================================================================
+# NOSCompleter — abbreviated command and token prefix matching
+# ============================================================================
+
+class TestAbbreviatedPrefixCompletion:
+    """Verify resolve_prefix is used for commands and config walk tokens."""
+
+    # Configure mode: abbreviated top-level command dispatch
+    def test_abbreviated_set_dispatches(self):
+        kws = complete("se ", CLIMode.CONFIGURE)
+        assert "system" in kws
+        assert "interfaces" in kws
+
+    def test_abbreviated_set_with_abbreviated_section(self):
+        # 'set int ' should show interface-level completions (abbreviated walk token)
+        kws = complete("set int ", CLIMode.CONFIGURE)
+        assert "<interface-name>" in kws
+
+    def test_abbreviated_set_deep_walk(self):
+        # Abbreviated walk: 'int' → 'interfaces', 'uni' → 'unit', 'fam' → 'family'
+        kws = complete("set int eth0 uni 0 fam", CLIMode.CONFIGURE)
+        assert "family" in kws
+
+    def test_abbreviated_set_deep_walk_with_space(self):
+        # After fully resolving abbreviated walk, show family children
+        kws = complete("set int eth0 uni 0 family ", CLIMode.CONFIGURE)
+        assert "inet" in kws
+        assert "inet6" in kws
+
+    def test_abbreviated_set_intermediate_walk(self):
+        # 'set sys ' should walk into system node
+        kws = complete("set sys ", CLIMode.CONFIGURE)
+        assert "host-name" in kws
+        assert "ntp" in kws
+
+    def test_abbreviated_configure_command_dispatches(self):
+        # 'del ' should show config tree (same as 'delete ')
+        kws = complete("del ", CLIMode.CONFIGURE)
+        assert "interfaces" in kws
+        assert "system" in kws
+
+    def test_abbreviated_edit_dispatches(self):
+        kws = complete("ed ", CLIMode.CONFIGURE)
+        assert "interfaces" in kws
+
+    def test_abbreviated_show_in_configure_dispatches(self):
+        # 'sho ' in configure mode should show config tree sections
+        kws = complete("sho ", CLIMode.CONFIGURE)
+        assert "interfaces" in kws
+
+    def test_ambiguous_configure_command_yields_nothing(self):
+        # 's' matches 'set' and 'show' — ambiguous → no subcommand completions
+        kws = complete("s ", CLIMode.CONFIGURE)
+        assert "interfaces" not in kws
+        assert "host-name" not in kws
+
+    def test_abbreviated_rollback_dispatches(self):
+        kws = complete("rol ", CLIMode.CONFIGURE)
+        assert any("<0-49>" in k for k in kws)
+
+    def test_abbreviated_commit_dispatches(self):
+        kws = complete("com ", CLIMode.CONFIGURE)
+        assert "confirmed" in kws
+        assert "check" in kws
+
+    # Config walk abbreviation via complete_config_tokens directly
+    def test_complete_config_abbreviated_section(self):
+        # 'sys' should resolve to 'system' during walk
+        results = complete_config_tokens(["sys"], True, [])
+        kws = [c.text for c in results]
+        assert "host-name" in kws
+        assert "ntp" in kws
+
+    def test_complete_config_abbreviated_nested_walk(self):
+        # 'pro' → 'protocols', 'bg' → 'bgp'
+        results = complete_config_tokens(["pro", "bg"], True, [])
+        kws = [c.text for c in results]
+        assert "group" in kws
+
+    def test_complete_config_ambiguous_walk_returns_empty(self):
+        # 'r' matches 'routing-options' and 'routing-instances' → ambiguous walk → no completions
+        results = complete_config_tokens(["r"], True, [])
+        assert results == []

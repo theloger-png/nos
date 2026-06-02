@@ -182,6 +182,7 @@ class EthernetSwitching(BaseModel):
 
 
 class UnitConfig(BaseModel):
+    vlan_id: Optional[int] = Field(None, ge=1, le=4094)
     family_ethernet_switching: Optional[EthernetSwitching] = None
     family_inet: Optional[FamilyInet] = None
     family_inet6: Optional[FamilyInet6] = None

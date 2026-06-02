@@ -164,10 +164,21 @@ class TestSetIntegerValue:
 class TestSetDynamicKeys:
     def test_inet_address_becomes_dict_key(self, mode, store):
         mode.execute("set interfaces eth0 family inet address 10.0.0.1/30")
-        addr_dict = (
-            store.candidate["interfaces"]["eth0"]["family"]["inet"]["address"]
-        )
+        addr_dict = store.candidate["interfaces"]["eth0"]["family_inet"]["address"]
         assert "10.0.0.1/30" in addr_dict
+
+    def test_inet_address_stored_as_empty_dict(self, mode, store):
+        mode.execute("set interfaces eth0 family inet address 10.0.0.1/30")
+        addr = store.candidate["interfaces"]["eth0"]["family_inet"]["address"]["10.0.0.1/30"]
+        assert addr == {}, f"Expected {{}} for InetAddress, got {addr!r}"
+
+    def test_unit_family_inet_address_stores_correctly(self, mode, store):
+        mode.execute("set interfaces ens34 unit 0 family inet address 10.0.0.1/24")
+        unit = store.candidate["interfaces"]["ens34"]["unit"]["0"]
+        assert "family_inet" in unit, "family_inet should be nested under unit"
+        addr = unit["family_inet"]["address"]
+        assert "10.0.0.1/24" in addr
+        assert addr["10.0.0.1/24"] == {}, f"Expected {{}} for InetAddress, got {addr['10.0.0.1/24']!r}"
 
     def test_static_route_prefix_becomes_dict_key(self, mode, store):
         mode.execute(
@@ -179,7 +190,7 @@ class TestSetDynamicKeys:
     def test_inet_address_primary_flag(self, mode, store):
         mode.execute("set interfaces eth0 family inet address 10.0.0.1/30")
         mode.execute("set interfaces eth0 family inet address 10.0.0.1/30 primary")
-        addr = store.candidate["interfaces"]["eth0"]["family"]["inet"]["address"]["10.0.0.1/30"]
+        addr = store.candidate["interfaces"]["eth0"]["family_inet"]["address"]["10.0.0.1/30"]
         assert addr.get("primary") is True
 
 

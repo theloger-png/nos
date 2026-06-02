@@ -22,12 +22,17 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult
+from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult, resolve_prefix
 from nos.config.serializer import to_set_commands
 from nos.config.store import ConfigStore
 
 console = Console()
 _parser = CommandParser()
+
+_SHOW_SUBCMDS: list[str] = [
+    "bgp", "configuration", "forwarding", "interfaces",
+    "isis", "route", "system", "vlans",
+]
 
 
 # ============================================================================
@@ -175,8 +180,12 @@ class OperationalMode:
         if not args:
             return self._show_help()
 
-        sub = args[0].lower()
+        sub_raw = args[0].lower()
         sub_args = args[1:]
+
+        sub, err = resolve_prefix(sub_raw, _SHOW_SUBCMDS)
+        if err:
+            return f"error: {err}"
 
         match sub:
             case "interfaces":
@@ -195,7 +204,7 @@ class OperationalMode:
                 output = self._show_forwarding()
             case "configuration":
                 output = self._show_configuration(sub_args)
-            case _:
+            case _:  # pragma: no cover
                 return f"error: unknown show sub-command: {sub!r}"
 
         return _apply_pipe(output, pipe)

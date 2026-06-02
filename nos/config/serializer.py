@@ -17,6 +17,42 @@ def _j2k(token: str) -> str:
     return token.replace("-", "_")
 
 
+# Two consecutive CLI tokens that together form a single JSON key.
+# Stored as (tok1, tok2) → JunOS-hyphen form so _j2k can finish the conversion.
+_COMPOUND_TOKENS: dict[tuple[str, str], str] = {
+    ("family", "inet"):               "family-inet",
+    ("family", "inet6"):              "family-inet6",
+    ("family", "ethernet-switching"): "family-ethernet-switching",
+}
+
+# Internal snake_case key → the CLI token list used when emitting set commands.
+_COMPOUND_KEY_EXPANSION: dict[str, list[str]] = {
+    "family_inet":              ["family", "inet"],
+    "family_inet6":             ["family", "inet6"],
+    "family_ethernet_switching": ["family", "ethernet-switching"],
+}
+
+
+def _merge_compound_tokens(tokens: list[str]) -> list[str]:
+    """Merge consecutive token pairs that form a single compound config key.
+
+    E.g. ["family", "inet"] → ["family-inet"] (JunOS hyphen form so that
+    the caller can apply _j2k to arrive at the snake_case key family_inet).
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(tokens):
+        if i + 1 < len(tokens):
+            merged = _COMPOUND_TOKENS.get((tokens[i], tokens[i + 1]))
+            if merged is not None:
+                result.append(merged)
+                i += 2
+                continue
+        result.append(tokens[i])
+        i += 1
+    return result
+
+
 # ---------------------------------------------------------------------------
 # to_set_commands
 # ---------------------------------------------------------------------------
@@ -41,7 +77,11 @@ def _flatten(node: Any, path: list[str], out: list[str]) -> None:
         for key, value in node.items():
             if value is None or value is False:
                 continue
-            _flatten(value, path + [_k2j(str(key))], out)
+            expansion = _COMPOUND_KEY_EXPANSION.get(str(key))
+            if expansion:
+                _flatten(value, path + expansion, out)
+            else:
+                _flatten(value, path + [_k2j(str(key))], out)
         return
     if isinstance(node, list):
         for item in node:
@@ -208,6 +248,6 @@ def from_set_commands(commands: list[str]) -> dict:
         if not path_keys:
             continue
 
-        _insert(config, path_keys, value)
+        _insert(config, _merge_compound_tokens(path_keys), value)
 
     return config

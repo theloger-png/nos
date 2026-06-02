@@ -10,10 +10,11 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from nos.cli.completer import expand_config_tokens
 from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult
 from nos.config.commit import CommitEngine, CommitError, RollbackError
 from nos.config.diff import diff
-from nos.config.serializer import from_set_commands
+from nos.config.serializer import from_set_commands, _merge_compound_tokens
 from nos.config.store import ConfigStore
 
 _parser = CommandParser()
@@ -23,9 +24,16 @@ _parser = CommandParser()
 # Config rendering
 # ============================================================================
 
+_COMPOUND_KEY_DISPLAY: dict[str, str] = {
+    "family_inet":              "family inet",
+    "family_inet6":             "family inet6",
+    "family_ethernet_switching": "family ethernet-switching",
+}
+
+
 def _j2k(key: str) -> str:
-    """snake_case internal key → JunOS hyphen-case for display."""
-    return str(key).replace("_", "-")
+    """snake_case internal key → JunOS display form (two words for compound keys)."""
+    return _COMPOUND_KEY_DISPLAY.get(str(key)) or str(key).replace("_", "-")
 
 
 def render_block(cfg: Any, depth: int = 0) -> str:
@@ -79,7 +87,7 @@ def render_block(cfg: Any, depth: int = 0) -> str:
 def _get_at_path(cfg: dict, path: list[str]) -> Any:
     """Navigate *cfg* dict following *path* (internal snake_case keys)."""
     node: Any = cfg
-    for part in path:
+    for part in _merge_compound_tokens(path):
         internal = part.replace("-", "_")
         if isinstance(node, dict) and internal in node:
             node = node[internal]
@@ -208,7 +216,10 @@ class ConfigureMode:
         if not args:
             return "error: set requires arguments"
 
-        full_args = self.edit_path + args
+        full_args_raw = self.edit_path + args
+        full_args, exp_err = expand_config_tokens(full_args_raw)
+        if exp_err:
+            return f"error: {exp_err}"
 
         # Use the config tree to find where the value begins.
         # Tokens *before* split_at are path components (left as-is so that
@@ -231,6 +242,31 @@ class ConfigureMode:
         partial = from_set_commands([cmd])
         if not partial:
             return "error: invalid set arguments"
+
+        # When all tokens are path components (pure presence path), check if
+        # the final config-tree node is a container dict (_n node, not a
+        # presence flag or value leaf).  If so, store {} so that the value
+        # round-trips correctly through the schema validator — e.g. an IP
+        # address key under "address" should map to {} (InetAddress defaults),
+        # not True.
+        if split_at == len(full_args):
+            from nos.cli.completer import CONFIG_TREE, navigate_tree
+            final_node = navigate_tree(CONFIG_TREE, full_args)
+            if (final_node is not None
+                    and not final_node.is_presence
+                    and not final_node.is_value):
+                leaf_path = [tok.replace("-", "_") for tok in _merge_compound_tokens(full_args)]
+                node: Any = partial
+                for key in leaf_path[:-1]:
+                    if not isinstance(node, dict):
+                        node = None
+                        break
+                    node = node.get(key)
+                if isinstance(node, dict):
+                    last_key = leaf_path[-1]
+                    if node.get(last_key) is True:
+                        node[last_key] = {}
+
         _deep_merge(self.store.candidate, partial)
         return ""
 
@@ -241,7 +277,11 @@ class ConfigureMode:
     def _handle_delete(self, args: list[str]) -> str:
         if not args:
             return "error: delete requires a path"
-        full_path = [p.replace("-", "_") for p in (self.edit_path + args)]
+        expanded, exp_err = expand_config_tokens(self.edit_path + args)
+        if exp_err:
+            return f"error: {exp_err}"
+        merged = _merge_compound_tokens(expanded)
+        full_path = [p.replace("-", "_") for p in merged]
         self.store.delete_candidate(full_path)
         return ""
 
@@ -252,13 +292,14 @@ class ConfigureMode:
     def _handle_edit(self, args: list[str]) -> str:
         if not args:
             return "error: edit requires a path"
-        new_path = self.edit_path + args
-        # Validate the path exists in the config tree (best-effort)
+        expanded, exp_err = expand_config_tokens(self.edit_path + args)
+        if exp_err:
+            return f"error: {exp_err}"
         from nos.cli.completer import navigate_tree, CONFIG_TREE
-        node = navigate_tree(CONFIG_TREE, new_path)
+        node = navigate_tree(CONFIG_TREE, expanded)
         if node is None:
-            return f"error: {' '.join(args)!r} is not a valid configuration path"
-        self.edit_path = new_path
+            return f"error: {' '.join(expanded)!r} is not a valid configuration path"
+        self.edit_path = expanded
         return ""
 
     def _handle_up(self, count: int) -> str:
@@ -276,9 +317,13 @@ class ConfigureMode:
             return self._show_compare()
 
         candidate = self.store.get_candidate()
-        # args extend the current edit_path so "show interfaces" at root
-        # is equivalent to navigating into interfaces and running show.
-        display_path = self.edit_path + args
+        full = self.edit_path + args
+        if full:
+            display_path, exp_err = expand_config_tokens(full)
+            if exp_err:
+                return f"error: {exp_err}"
+        else:
+            display_path = full
         subtree = _get_at_path(candidate, display_path)
         if subtree is None:
             if display_path:

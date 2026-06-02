@@ -68,6 +68,81 @@ class TestInterfaces:
 
 
 # ---------------------------------------------------------------------------
+# Interface units
+# ---------------------------------------------------------------------------
+
+class TestInterfaceUnits:
+    def _iface(self, name: str, units: dict) -> dict:
+        return {"interfaces": {name: {"unit": units}}}
+
+    def test_unit_0_new_address_calls_sync(self):
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+        applier.apply({}, self._iface("ens34", {"0": unit_cfg}))
+        kernel.sync_interface_addresses.assert_called_once_with("ens34", unit_cfg)
+
+    def test_unit_0_removed_clears_addresses(self):
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+        applier.apply(self._iface("ens34", {"0": unit_cfg}), self._iface("ens34", {}))
+        kernel.sync_interface_addresses.assert_called_once_with("ens34", {})
+
+    def test_unit_0_unchanged_not_resynced(self):
+        applier, kernel, _, _ = _make_applier()
+        config = self._iface("ens34", {"0": {"family_inet": {"address": {"10.0.0.1/30": {}}}}})
+        applier.apply(config, config)
+        kernel.sync_interface_addresses.assert_not_called()
+
+    def test_unit_n_new_calls_apply_subinterface(self):
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"vlan_id": 100, "family_inet": {"address": {"192.168.100.1/24": {}}}}
+        applier.apply({}, self._iface("ens34", {"100": unit_cfg}))
+        kernel.apply_subinterface.assert_called_once_with("ens34", 100, unit_cfg)
+
+    def test_unit_n_removed_calls_delete_interface(self):
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"vlan_id": 100}
+        applier.apply(self._iface("ens34", {"100": unit_cfg}), self._iface("ens34", {}))
+        kernel.delete_interface.assert_called_once_with("ens34.100")
+
+    def test_unit_n_unchanged_not_reapplied(self):
+        applier, kernel, _, _ = _make_applier()
+        config = self._iface("ens34", {"100": {"vlan_id": 100}})
+        applier.apply(config, config)
+        kernel.apply_subinterface.assert_not_called()
+
+    def test_multiple_units_each_handled(self):
+        applier, kernel, _, _ = _make_applier()
+        units = {
+            "0": {"family_inet": {"address": {"10.0.0.1/30": {}}}},
+            "100": {"vlan_id": 100},
+            "200": {"vlan_id": 200},
+        }
+        applier.apply({}, self._iface("ens34", units))
+        kernel.sync_interface_addresses.assert_called_once_with(
+            "ens34", {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+        )
+        assert kernel.apply_subinterface.call_count == 2
+        kernel.apply_subinterface.assert_any_call("ens34", 100, {"vlan_id": 100})
+        kernel.apply_subinterface.assert_any_call("ens34", 200, {"vlan_id": 200})
+
+    def test_interface_deleted_also_deletes_subinterfaces(self):
+        applier, kernel, _, _ = _make_applier()
+        old = self._iface("ens34", {"100": {"vlan_id": 100}, "200": {"vlan_id": 200}})
+        applier.apply(old, {})
+        kernel.delete_interface.assert_any_call("ens34.100")
+        kernel.delete_interface.assert_any_call("ens34.200")
+        kernel.delete_interface.assert_any_call("ens34")
+
+    def test_top_level_apply_interface_still_called_on_change(self):
+        applier, kernel, _, _ = _make_applier()
+        old = {"interfaces": {"ens34": {"description": "old", "unit": {}}}}
+        new = {"interfaces": {"ens34": {"description": "new", "unit": {}}}}
+        applier.apply(old, new)
+        kernel.apply_interface.assert_called_once_with("ens34", {"description": "new", "unit": {}})
+
+
+# ---------------------------------------------------------------------------
 # VLANs section
 # ---------------------------------------------------------------------------
 

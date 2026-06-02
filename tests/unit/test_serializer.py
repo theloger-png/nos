@@ -120,7 +120,7 @@ def test_nested_address_dict_key_is_path_component():
     }
     cmds = to_set_commands(cfg)
     # empty dict at leaf → address key becomes the presence path component
-    assert has_cmd(cmds, "set interfaces eth0 unit 0 family-inet address 10.0.0.1/30")
+    assert has_cmd(cmds, "set interfaces eth0 unit 0 family inet address 10.0.0.1/30")
 
 
 def test_address_with_primary_true():
@@ -204,7 +204,7 @@ def test_parse_nested_dict():
 
 
 def test_parse_ip_as_dict_key_presence():
-    result = from_set_commands(["set interfaces eth0 unit 0 family-inet address 10.0.0.1/30"])
+    result = from_set_commands(["set interfaces eth0 unit 0 family inet address 10.0.0.1/30"])
     addr = result["interfaces"]["eth0"]["unit"]["0"]["family_inet"]["address"]
     assert "10.0.0.1/30" in addr
     assert addr["10.0.0.1/30"] is True

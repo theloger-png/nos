@@ -24,9 +24,13 @@ from nos.cli.completer import NOSCompleter
 from nos.cli.modes.configure import ConfigureMode
 from nos.cli.modes.operational import OperationalMode
 from nos.cli.parser import CLIMode
+from nos.config.applier import ConfigApplier
 from nos.config.commit import CommitEngine
 from nos.config.store import ConfigStore
 from nos.config.validator import ConfigValidator
+from nos.drivers.frr import FRRClient
+from nos.drivers.kernel import KernelDriver
+from nos.pfe.manager import PFEManager
 
 
 # ============================================================================
@@ -63,7 +67,12 @@ class NOSShell:
     ) -> None:
         self.store = store or ConfigStore()
         validator = ConfigValidator()
-        self.commit_engine = CommitEngine(self.store, validator=validator)
+        pfe = PFEManager()
+        pfe.start()
+        kernel_driver = KernelDriver()
+        frr_client = FRRClient()
+        applier = ConfigApplier(kernel_driver, frr_client, pfe)
+        self.commit_engine = CommitEngine(self.store, validator=validator, applier=applier)
         self.username = username or getpass.getuser()
         self.hostname = hostname or socket.gethostname().split(".")[0]
         self._history_file = history_file or Path.home() / ".nos_history"

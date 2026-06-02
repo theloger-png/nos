@@ -48,6 +48,41 @@ class InterfaceDriver:
             self._sync_addresses(ip, idx, config)
             self._apply_state(ip, idx, config)
 
+    def sync_interface_addresses(self, name: str, config: Dict[str, Any]) -> None:
+        """Sync IP addresses on an existing interface without touching state or attrs."""
+        with self._iproute_factory() as ip:
+            idx = self._lookup(ip, name)
+            if idx is None:
+                logger.warning("Interface %s not found; skipping address sync", name)
+                return
+            self._sync_addresses(ip, idx, config)
+
+    def apply_subinterface(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
+        """Create or update a VLAN subinterface <parent>.<unit_num>."""
+        vlan_id = config.get("vlan_id")
+        sub_name = f"{parent}.{unit_num}"
+        with self._iproute_factory() as ip:
+            parent_idx = self._lookup(ip, parent)
+            if parent_idx is None:
+                logger.warning(
+                    "Parent interface %s not found; skipping subinterface %s", parent, sub_name
+                )
+                return
+            idx = self._lookup(ip, sub_name)
+            if idx is None:
+                if vlan_id is None:
+                    logger.warning(
+                        "Unit %d on %s has no vlan_id; cannot create subinterface",
+                        unit_num, parent,
+                    )
+                    return
+                ip.link("add", ifname=sub_name, kind="vlan", link=parent_idx, vlan_id=vlan_id)
+                idx = self._lookup(ip, sub_name)
+                if idx is None:
+                    raise RuntimeError(f"Failed to create subinterface {sub_name}")
+            self._sync_addresses(ip, idx, config)
+            self._apply_state(ip, idx, config)
+
     def delete_interface(self, name: str) -> None:
         """Delete a virtual interface (no-op for physical interfaces)."""
         if self._is_physical(name):
@@ -107,9 +142,6 @@ class InterfaceDriver:
         for addr_str in (family_inet6.get("address") or {}):
             net = ipaddress.ip_interface(addr_str)
             desired.append((str(net.ip), net.network.prefixlen))
-
-        if not desired:
-            return
 
         existing: list[tuple[str, int]] = [
             (msg.get_attr("IFA_ADDRESS"), msg["prefixlen"])

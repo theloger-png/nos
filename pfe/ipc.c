@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <errno.h>
+#include <grp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -47,6 +48,13 @@ int ipc_server_create(const char *sock_path)
     /* rw-rw---- so the 'nos' group can connect without root. */
     if (chmod(sock_path, 0660) < 0)
         ipc_warn("chmod %s: %s", sock_path, strerror(errno));
+
+    struct group *grp = getgrnam("nos");
+    if (!grp) {
+        ipc_warn("group 'nos' not found — socket group ownership not set");
+    } else if (chown(sock_path, (uid_t)-1, grp->gr_gid) < 0) {
+        ipc_warn("chown %s to group nos: %s", sock_path, strerror(errno));
+    }
 
     if (listen(fd, 8) < 0) {
         ipc_err("listen %s: %s", sock_path, strerror(errno));

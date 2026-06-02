@@ -68,13 +68,46 @@ class ConfigApplier:
         full_config: Dict[str, Any],
     ) -> None:
         for name in set(old) - set(new):
+            old_cfg = old.get(name) or {}
+            for unit_num_str in (old_cfg.get("unit") or {}):
+                unit_num = int(unit_num_str)
+                if unit_num > 0:
+                    log.info("Deleting subinterface %s.%d", name, unit_num)
+                    self._kernel.delete_interface(f"{name}.{unit_num}")
             log.info("Deleting interface %s", name)
             self._kernel.delete_interface(name)
 
         for name, config in new.items():
-            if config != old.get(name):
+            cfg = config or {}
+            old_cfg = old.get(name) or {}
+
+            if cfg != old_cfg:
                 log.info("Applying interface %s", name)
-                self._kernel.apply_interface(name, config or {})
+                self._kernel.apply_interface(name, cfg)
+
+            old_units = old_cfg.get("unit") or {}
+            new_units = cfg.get("unit") or {}
+
+            for unit_num_str in set(old_units) - set(new_units):
+                unit_num = int(unit_num_str)
+                if unit_num == 0:
+                    log.info("Clearing addresses on interface %s (unit 0 removed)", name)
+                    self._kernel.sync_interface_addresses(name, {})
+                else:
+                    log.info("Deleting subinterface %s.%d", name, unit_num)
+                    self._kernel.delete_interface(f"{name}.{unit_num}")
+
+            for unit_num_str, unit_cfg in new_units.items():
+                unit_num = int(unit_num_str)
+                unit_config = unit_cfg or {}
+                if unit_config == (old_units.get(unit_num_str) or {}):
+                    continue
+                if unit_num == 0:
+                    log.info("Syncing addresses on interface %s (unit 0)", name)
+                    self._kernel.sync_interface_addresses(name, unit_config)
+                else:
+                    log.info("Applying subinterface %s.%d", name, unit_num)
+                    self._kernel.apply_subinterface(name, unit_num, unit_config)
 
     def _apply_vlans(
         self,

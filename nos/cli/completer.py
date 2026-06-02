@@ -13,7 +13,8 @@ from typing import TYPE_CHECKING, Generator, Optional
 from prompt_toolkit.completion import CompleteEvent, Completion, Completer
 from prompt_toolkit.document import Document
 
-from nos.cli.parser import CLIMode
+from nos.cli.parser import CLIMode, resolve_prefix
+from nos.config.serializer import _merge_compound_tokens
 
 if TYPE_CHECKING:
     from nos.config.store import ConfigStore
@@ -114,7 +115,7 @@ def build_config_tree() -> ConfigNode:
     })
 
     unit_inner = _n("Logical interface unit", {
-        "family": _n("Protocol family", {
+        "family": _n("Address family", {
             "inet": _n("IPv4 family", {
                 "address": _d("IPv4 address", "<ip/prefix>", inet_addr_node),
             }),
@@ -139,11 +140,11 @@ def build_config_tree() -> ConfigNode:
                      ["auto", "10m", "100m", "1g", "10g", "25g", "40g", "100g"]),
         "duplex": _e("Link duplex", ["auto", "half", "full"]),
         "disable": _p("Administratively disable this interface"),
-        "family": _n("Protocol family (routed port)", {
-            "inet": _n("IPv4 family", {
+        "family": _n("Address family", {
+            "inet": _n("IPv4 family (routed port)", {
                 "address": _d("IPv4 address", "<ip/prefix>", inet_addr_node),
             }),
-            "inet6": _n("IPv6 family", {
+            "inet6": _n("IPv6 family (routed port)", {
                 "address": _d("IPv6 address", "<ipv6/prefix>",
                                ConfigNode(help="IPv6 address/prefix")),
             }),
@@ -289,6 +290,60 @@ CONFIG_TREE: ConfigNode = build_config_tree()
 # Tree navigation
 # ============================================================================
 
+def expand_config_tokens(tokens: list[str]) -> tuple[list[str] | None, str | None]:
+    """Expand abbreviated static-keyword tokens in a JunOS config path.
+
+    Walks CONFIG_TREE token by token.  Static keyword children are matched
+    with :func:`nos.cli.parser.resolve_prefix`; dynamic-child tokens
+    (interface names, IP prefixes, etc.) and value/presence tokens are
+    passed through unchanged.
+
+    Only **ambiguous** prefixes produce an error.  **Unknown** tokens (not in
+    the CONFIG_TREE and no dynamic child at that level) are passed through
+    verbatim along with all remaining tokens — this allows sections not yet
+    modelled in the tree (e.g. ``firewall``) to reach the config store and
+    validator unchanged.
+
+    Returns ``(expanded_tokens, None)`` on success or ``(None, error_msg)``
+    on ambiguous prefix.
+    """
+    expanded: list[str] = []
+    node: Optional[ConfigNode] = CONFIG_TREE
+
+    for i, tok in enumerate(tokens):
+        if node is None or node.is_value or node.is_presence:
+            # At/past a leaf: pass remaining tokens through unchanged
+            expanded.extend(tokens[i:])
+            return expanded, None
+
+        if node.children:
+            resolved, err = resolve_prefix(tok, list(node.children.keys()))
+            if err is None:
+                expanded.append(resolved)
+                node = node.children[resolved]
+                continue
+            # Ambiguous → propagate error immediately
+            if "ambiguous" in err:
+                return None, err
+            # Unknown static child → try dynamic child, else pass through rest
+            if node.dynamic_child is not None:
+                expanded.append(tok)
+                node = node.dynamic_child
+                continue
+            expanded.extend(tokens[i:])
+            return expanded, None
+
+        # No static children at this node
+        if node.dynamic_child is not None:
+            expanded.append(tok)
+            node = node.dynamic_child
+        else:
+            expanded.extend(tokens[i:])
+            return expanded, None
+
+    return expanded, None
+
+
 def navigate_tree(root: ConfigNode, path: list[str]) -> Optional[ConfigNode]:
     """Walk *root* following *path* tokens; return node reached or None."""
     node: Optional[ConfigNode] = root
@@ -308,7 +363,7 @@ def _candidate_keys(store: "ConfigStore", jpath: list[str]) -> list[str]:
     try:
         cfg = store.get_candidate()
         cur: object = cfg
-        for part in jpath:
+        for part in _merge_compound_tokens(jpath):
             internal = part.replace("-", "_")
             if isinstance(cur, dict) and internal in cur:
                 cur = cur[internal]
@@ -396,9 +451,16 @@ def complete_config_tokens(
     for token in walk_tokens:
         if node.is_value or node.is_presence:
             return []
-        if token in node.children:
-            walked.append(token)
-            node = node.children[token]
+        if node.children:
+            resolved, err = resolve_prefix(token, list(node.children.keys()))
+            if resolved is not None:
+                walked.append(resolved)
+                node = node.children[resolved]
+            elif node.dynamic_child is not None:
+                walked.append(token)
+                node = node.dynamic_child
+            else:
+                return []
         elif node.dynamic_child is not None:
             walked.append(token)
             node = node.dynamic_child
@@ -566,11 +628,14 @@ class NOSCompleter(Completer):
     def _complete_operational(
         self, cmd: str, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
-        if cmd == "show":
+        resolved, err = resolve_prefix(cmd, list(_OPERATIONAL_CMDS.keys()))
+        if err:
+            return
+        if resolved == "show":
             yield from self._complete_show_operational(rest, completing_new)
-        elif cmd == "ping":
+        elif resolved == "ping":
             yield from self._complete_ping_options(rest, completing_new)
-        elif cmd == "traceroute":
+        elif resolved == "traceroute":
             yield from self._complete_traceroute_options(rest, completing_new)
 
     def _complete_show_operational(
@@ -587,10 +652,10 @@ class NOSCompleter(Completer):
                 yield Completion("|", -len(prefix), display_meta="Filter output")
             return
 
-        sub = rest[0].lower()
+        resolved_sub, _ = resolve_prefix(rest[0].lower(), list(_SHOW_OPER_ARGS.keys()))
 
         # "show interfaces [terse|description]"
-        if sub == "interfaces":
+        if resolved_sub == "interfaces":
             sub_rest = rest[1:]
             sub_prefix = "" if completing_new else (sub_rest[-1] if sub_rest else "")
             if not sub_rest or (len(sub_rest) == 1 and not completing_new):
@@ -600,7 +665,7 @@ class NOSCompleter(Completer):
             return
 
         # "show configuration <section-path>": complete against config tree
-        if sub == "configuration":
+        if resolved_sub == "configuration":
             yield from complete_config_tokens(
                 rest[1:], completing_new, [], self.store
             )
@@ -636,15 +701,18 @@ class NOSCompleter(Completer):
     def _complete_configure(
         self, cmd: str, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
-        if cmd in ("set", "delete", "edit"):
+        resolved, err = resolve_prefix(cmd, list(_CONFIGURE_CMDS.keys()))
+        if err:
+            return
+        if resolved in ("set", "delete", "edit"):
             yield from complete_config_tokens(
                 rest, completing_new, self.edit_path, self.store
             )
-        elif cmd == "commit":
+        elif resolved == "commit":
             yield from self._complete_commit(rest, completing_new)
-        elif cmd == "rollback":
+        elif resolved == "rollback":
             yield from self._complete_rollback(rest, completing_new)
-        elif cmd == "run":
+        elif resolved == "run":
             # Delegate to operational completions
             if rest:
                 sub_cmd = rest[0].lower()
@@ -653,9 +721,9 @@ class NOSCompleter(Completer):
                 for kw, desc in _OPERATIONAL_CMDS.items():
                     if kw != "configure":
                         yield Completion(kw, display_meta=desc)
-        elif cmd == "show":
+        elif resolved == "show":
             yield from self._complete_show_configure(rest, completing_new)
-        elif cmd == "up":
+        elif resolved == "up":
             if not rest or (len(rest) == 1 and not completing_new):
                 prefix = rest[0] if rest and not completing_new else ""
                 yield Completion("<count>", -len(prefix), display_meta="Number of levels to go up")
