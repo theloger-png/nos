@@ -101,6 +101,16 @@ class TestConfigTree:
         assert vlan_inner is not None
         assert "vlan-id" in vlan_inner.children
 
+    def test_unit_inner_has_vlan_id(self):
+        ifaces = CONFIG_TREE.children["interfaces"]
+        iface_inner = ifaces.dynamic_child
+        unit_dyn = iface_inner.children["unit"]
+        unit_inner = unit_dyn.dynamic_child
+        assert unit_inner is not None
+        node = unit_inner.children["vlan-id"]
+        assert node.is_value
+        assert node.value_hint == "<1-4094>"
+
 
 # ============================================================================
 # navigate_tree

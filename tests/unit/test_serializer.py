@@ -314,3 +314,34 @@ def test_empty_string_roundtrip():
     cmds = to_set_commands(cfg)
     result = from_set_commands(cmds)
     assert result["system"]["host_name"] == ""
+
+
+def test_parse_unit_vlan_id():
+    """vlan-id on a unit is parsed as an integer and stored as vlan_id."""
+    result = from_set_commands([
+        "set interfaces ens34 unit 100 vlan-id 100",
+        "set interfaces ens34 unit 100 family inet address 10.0.1.1/24",
+    ])
+    unit = result["interfaces"]["ens34"]["unit"]["100"]
+    assert unit["vlan_id"] == 100
+    assert "10.0.1.1/24" in unit["family_inet"]["address"]
+
+
+def test_roundtrip_unit_vlan_id():
+    """vlan_id in a unit survives a to_set_commands / from_set_commands round-trip."""
+    cfg = {
+        "interfaces": {
+            "ens34": {
+                "unit": {
+                    "100": {
+                        "vlan_id": 100,
+                        "family_inet": {"address": {"10.0.1.1/24": {}}},
+                    }
+                }
+            }
+        }
+    }
+    cmds = to_set_commands(cfg)
+    assert any("vlan-id 100" in c for c in cmds), f"vlan-id not emitted: {cmds}"
+    recovered = from_set_commands(cmds)
+    assert to_set_commands(recovered) == cmds

@@ -134,6 +134,7 @@ def build_config_tree() -> ConfigNode:
                 }),
             }),
         }),
+        "vlan-id": _v("802.1Q VLAN ID for this unit", "<1-4094>"),
     })
 
     interface_inner = _n("Interface configuration", {

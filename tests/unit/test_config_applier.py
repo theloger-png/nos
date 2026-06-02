@@ -502,3 +502,25 @@ class TestSwitchport:
         kernel.apply_vlan.assert_called_with(
             "nos-br", "ens34", {"interface_mode": "access", "vlans": [101]}
         )
+
+
+# ---------------------------------------------------------------------------
+# vlan-id in unit config
+# ---------------------------------------------------------------------------
+
+class TestUnitVlanId:
+    def test_unit_vlan_id_passed_to_apply_subinterface(self):
+        """vlan_id from the unit config dict reaches apply_subinterface."""
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"vlan_id": 100, "family_inet": {"address": {"10.0.1.1/24": {}}}}
+        cfg = {"interfaces": {"ens34": {"unit": {"100": unit_cfg}}}}
+        applier.apply({}, cfg)
+        kernel.apply_subinterface.assert_called_once_with("ens34", 100, unit_cfg)
+
+    def test_unit_vlan_id_without_address(self):
+        """A unit with only vlan-id (no family) still calls apply_subinterface."""
+        applier, kernel, _, _ = _make_applier()
+        unit_cfg = {"vlan_id": 200}
+        cfg = {"interfaces": {"ens34": {"unit": {"200": unit_cfg}}}}
+        applier.apply({}, cfg)
+        kernel.apply_subinterface.assert_called_once_with("ens34", 200, unit_cfg)
