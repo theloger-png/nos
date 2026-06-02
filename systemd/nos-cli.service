@@ -1,11 +1,21 @@
 [Unit]
-Description=NOS CLI Service
+Description=NOS CLI Shell
+Documentation=https://github.com/nos-dev/nos
 After=network.target nos-pfe.service
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/nos
+ExecStart=/usr/local/bin/nos-cli
+User=nos
+Group=nos
 Restart=on-failure
+RestartSec=3s
+
+StandardInput=tty
+StandardOutput=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
 
 [Install]
 WantedBy=multi-user.target

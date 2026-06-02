@@ -38,7 +38,7 @@ BPF_OBJ  := xdp/xdp_prog.o
 CFLAGS   := -Wall -Wextra -O2 -g -I. -I./xdp
 
 # Libraries needed by the PFE binary.
-LDLIBS   := -lbpf -lcjson -lmnl -lpthread
+LDLIBS   := -lbpf -lcjson -lmnl -lpthread -lsystemd
 
 # BPF compilation flags.
 # -nostdinc strips the host C standard library but leaves compiler built-ins.

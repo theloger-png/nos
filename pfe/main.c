@@ -32,6 +32,7 @@
 #include <sys/un.h>
 #include <linux/if_link.h>
 #include <cjson/cJSON.h>
+#include <systemd/sd-daemon.h>
 
 #include "fib.h"
 #include "ipc.h"
@@ -636,6 +637,7 @@ int main(int argc, char *argv[])
     }
 
     log_info("ready — listening on %s", PFE_SOCK_PATH);
+    sd_notify(0, "READY=1");
 
     /* ── event loop ── */
 
