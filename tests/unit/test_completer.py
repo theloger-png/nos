@@ -486,3 +486,54 @@ class TestAbbreviatedPrefixCompletion:
         # 'r' matches 'routing-options' and 'routing-instances' → ambiguous walk → no completions
         results = complete_config_tokens(["r"], True, [])
         assert results == []
+
+
+# ============================================================================
+# Dotted interface notation (ens34.101) completion
+# ============================================================================
+
+class TestDottedUnitCompletion:
+    """complete_config_tokens must land at unit_inner after dotted expansion."""
+
+    def test_dotted_unit_shows_unit_level_keywords(self):
+        # 'set interfaces ens34.101 <TAB>' → unit-level: family, vlan-id
+        kws = complete("set interfaces ens34.101 ", CLIMode.CONFIGURE)
+        assert "family" in kws, f"family missing from {kws}"
+        assert "vlan-id" in kws, f"vlan-id missing from {kws}"
+        # Physical-only keywords must NOT appear
+        assert "speed" not in kws
+        assert "duplex" not in kws
+        assert "unit" not in kws
+
+    def test_dotted_unit_no_interface_level_keywords(self):
+        # description / mtu / disable are interface-level, not unit-level
+        kws = complete("set interfaces ens34.101 ", CLIMode.CONFIGURE)
+        assert "description" not in kws
+        assert "mtu" not in kws
+        assert "disable" not in kws
+
+    def test_dotted_unit_family_shows_address_families(self):
+        kws = complete("set interfaces ens34.101 family ", CLIMode.CONFIGURE)
+        assert "inet" in kws
+        assert "inet6" in kws
+        assert "ethernet-switching" in kws
+
+    def test_dotted_unit_vlan_id_shows_hint(self):
+        kws = complete("set interfaces ens34.101 vlan-id ", CLIMode.CONFIGURE)
+        assert "<1-4094>" in kws
+
+    def test_dotted_unit_family_inet_shows_address(self):
+        kws = complete("set interfaces ens34.101 family inet ", CLIMode.CONFIGURE)
+        assert "address" in kws
+
+    def test_dotted_unit_abbreviated_family(self):
+        # abbreviated 'fam' should still resolve under unit_inner
+        kws = complete("set interfaces ens34.101 fam ", CLIMode.CONFIGURE)
+        assert "inet" in kws
+        assert "inet6" in kws
+
+    def test_dotted_unit_abbreviated_interface_name(self):
+        # Abbreviated section prefix 'int' expands to 'interfaces'
+        kws = complete("set int ens34.101 ", CLIMode.CONFIGURE)
+        assert "family" in kws
+        assert "vlan-id" in kws

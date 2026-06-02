@@ -500,11 +500,23 @@ def complete_config_tokens(
                 walked.append(resolved)
                 node = node.children[resolved]
             elif node.dynamic_child is not None:
+                if node.expand_dotted_unit:
+                    m = _DOTTED_UNIT_RE.match(token)
+                    if m:
+                        walked.extend([m.group(1), "unit", m.group(2)])
+                        node = _advance_past_unit(node.dynamic_child, m.group(2))
+                        continue
                 walked.append(token)
                 node = node.dynamic_child
             else:
                 return []
         elif node.dynamic_child is not None:
+            if node.expand_dotted_unit:
+                m = _DOTTED_UNIT_RE.match(token)
+                if m:
+                    walked.extend([m.group(1), "unit", m.group(2)])
+                    node = _advance_past_unit(node.dynamic_child, m.group(2))
+                    continue
             walked.append(token)
             node = node.dynamic_child
         else:
