@@ -6,6 +6,7 @@ walks that tree based on tokens already typed and the current edit path.
 """
 from __future__ import annotations
 
+import re
 import shlex
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Generator, Optional
@@ -40,6 +41,8 @@ class ConfigNode:
     enum_choices: list[str] = field(default_factory=list)
     # True → no value token follows; setting this path is the action
     is_presence: bool = False
+    # True → token matching <name>.<digits> is expanded to <name> unit <digits>
+    expand_dotted_unit: bool = False
 
 
 # ── tree builder helpers ────────────────────────────────────────────────────
@@ -153,6 +156,7 @@ def build_config_tree() -> ConfigNode:
     })
 
     interfaces_node = _d("Physical/logical interfaces", "<interface-name>", interface_inner)
+    interfaces_node.expand_dotted_unit = True
 
     # ── vlans ──────────────────────────────────────────────────────────────
     vlan_inner = _n("VLAN definition", {
@@ -285,6 +289,23 @@ def build_config_tree() -> ConfigNode:
 # singleton
 CONFIG_TREE: ConfigNode = build_config_tree()
 
+# Matches "ens34.0", "irb.100", "eth0.10", etc. — <name>.<unit-number>
+_DOTTED_UNIT_RE = re.compile(r'^([^.]+)\.(\d+)$')
+
+
+def _advance_past_unit(iface_inner: ConfigNode, unit_str: str) -> ConfigNode:
+    """Return the tree node reached after consuming <iface> unit <unit-str>.
+
+    Starting from *iface_inner* (the node for an interface name's content),
+    navigate unit → <unit-str> and return the unit content node.  If the
+    tree doesn't have the expected structure, return *iface_inner* unchanged
+    so the caller degrades gracefully.
+    """
+    unit_dyn = iface_inner.children.get("unit")
+    if unit_dyn is None:
+        return iface_inner
+    return unit_dyn.dynamic_child if unit_dyn.dynamic_child is not None else unit_dyn
+
 
 # ============================================================================
 # Tree navigation
@@ -297,6 +318,15 @@ def expand_config_tokens(tokens: list[str]) -> tuple[list[str] | None, str | Non
     with :func:`nos.cli.parser.resolve_prefix`; dynamic-child tokens
     (interface names, IP prefixes, etc.) and value/presence tokens are
     passed through unchanged.
+
+    When a node has ``expand_dotted_unit=True`` (currently only the
+    ``interfaces`` node) and the incoming token matches ``<name>.<digits>``,
+    the token is expanded in-place:
+
+        ens34.0  →  ens34  unit  0
+
+    This allows ``set interfaces ens34.0 family inet address 10.0.0.1/24``
+    while keeping ``set protocols isis interface ens34.0`` intact.
 
     Only **ambiguous** prefixes produce an error.  **Unknown** tokens (not in
     the CONFIG_TREE and no dynamic child at that level) are passed through
@@ -327,6 +357,12 @@ def expand_config_tokens(tokens: list[str]) -> tuple[list[str] | None, str | Non
                 return None, err
             # Unknown static child → try dynamic child, else pass through rest
             if node.dynamic_child is not None:
+                if node.expand_dotted_unit:
+                    m = _DOTTED_UNIT_RE.match(tok)
+                    if m:
+                        expanded.extend([m.group(1), "unit", m.group(2)])
+                        node = _advance_past_unit(node.dynamic_child, m.group(2))
+                        continue
                 expanded.append(tok)
                 node = node.dynamic_child
                 continue
@@ -335,6 +371,12 @@ def expand_config_tokens(tokens: list[str]) -> tuple[list[str] | None, str | Non
 
         # No static children at this node
         if node.dynamic_child is not None:
+            if node.expand_dotted_unit:
+                m = _DOTTED_UNIT_RE.match(tok)
+                if m:
+                    expanded.extend([m.group(1), "unit", m.group(2)])
+                    node = _advance_past_unit(node.dynamic_child, m.group(2))
+                    continue
             expanded.append(tok)
             node = node.dynamic_child
         else:
