@@ -11,6 +11,10 @@ logger = logging.getLogger(__name__)
 # Physical / pre-existing interface name prefixes — skip creation for these.
 _PHYSICAL_PREFIXES = ("eth", "ens", "enp", "eno", "lo", "bond", "team")
 
+# Tracks which (address, prefixlen) tuples NOS has applied per interface name.
+# Only addresses recorded here are candidates for removal; OS/DHCP addresses are left alone.
+_nos_managed_addresses: dict[str, set[tuple[str, int]]] = {}
+
 
 class InterfaceDriver:
     """Manages network interfaces via pyroute2 Netlink.
@@ -45,7 +49,7 @@ class InterfaceDriver:
                     raise RuntimeError(f"Failed to create interface {name}")
 
             self._apply_attrs(ip, idx, config)
-            self._sync_addresses(ip, idx, config)
+            self._sync_addresses(ip, idx, name, config)
             self._apply_state(ip, idx, config)
 
     def sync_interface_addresses(self, name: str, config: Dict[str, Any]) -> None:
@@ -55,7 +59,7 @@ class InterfaceDriver:
             if idx is None:
                 logger.warning("Interface %s not found; skipping address sync", name)
                 return
-            self._sync_addresses(ip, idx, config)
+            self._sync_addresses(ip, idx, name, config)
 
     def apply_subinterface(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
         """Create or update a VLAN subinterface <parent>.<unit_num>."""
@@ -80,7 +84,7 @@ class InterfaceDriver:
                 idx = self._lookup(ip, sub_name)
                 if idx is None:
                     raise RuntimeError(f"Failed to create subinterface {sub_name}")
-            self._sync_addresses(ip, idx, config)
+            self._sync_addresses(ip, idx, sub_name, config)
             self._apply_state(ip, idx, config)
 
     def delete_interface(self, name: str) -> None:
@@ -131,7 +135,7 @@ class InterfaceDriver:
             logger.debug("Set link attrs on idx=%d: %s", idx, attrs)
 
     @staticmethod
-    def _sync_addresses(ip: IPRoute, idx: int, config: Dict[str, Any]) -> None:
+    def _sync_addresses(ip: IPRoute, idx: int, iface_name: str, config: Dict[str, Any]) -> None:
         family_inet = config.get("family_inet") or {}
         family_inet6 = config.get("family_inet6") or {}
 
@@ -143,22 +147,34 @@ class InterfaceDriver:
             net = ipaddress.ip_interface(addr_str)
             desired.append((str(net.ip), net.network.prefixlen))
 
+        nos_managed = _nos_managed_addresses.get(iface_name, set())
+
+        # If NOS has never managed this interface and has nothing to configure, leave OS
+        # addresses (netplan, DHCP, etc.) completely untouched.
+        if not desired and not nos_managed:
+            return
+
         existing: list[tuple[str, int]] = [
             (msg.get_attr("IFA_ADDRESS"), msg["prefixlen"])
             for msg in ip.addr("dump", index=idx)
         ]
+        desired_set = set(desired)
+        existing_set = {(a, p) for a, p in existing if a}
 
-        # Remove addresses no longer configured.
+        # Remove only addresses NOS previously applied that are no longer desired.
         for addr, plen in existing:
-            if addr and (addr, plen) not in desired:
+            if addr and (addr, plen) in nos_managed and (addr, plen) not in desired_set:
                 ip.addr("del", index=idx, address=addr, prefixlen=plen)
                 logger.debug("Removed address %s/%d from idx=%d", addr, plen, idx)
 
         # Add newly configured addresses.
         for addr, plen in desired:
-            if (addr, plen) not in existing:
+            if (addr, plen) not in existing_set:
                 ip.addr("add", index=idx, address=addr, prefixlen=plen)
                 logger.debug("Added address %s/%d to idx=%d", addr, plen, idx)
+
+        # Record exactly what NOS has applied; used to guard removals on future syncs.
+        _nos_managed_addresses[iface_name] = desired_set
 
     @staticmethod
     def _apply_state(ip: IPRoute, idx: int, config: Dict[str, Any]) -> None:

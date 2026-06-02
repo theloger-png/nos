@@ -3,7 +3,20 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
+import nos.drivers.kernel.interfaces as _iface_mod
 from nos.drivers.kernel.interfaces import InterfaceDriver
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+@pytest.fixture(autouse=True)
+def _clear_nos_managed():
+    """Reset the module-level address-tracking dict between tests."""
+    _iface_mod._nos_managed_addresses.clear()
+    yield
+    _iface_mod._nos_managed_addresses.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -102,21 +115,24 @@ def test_apply_interface_no_duplicate_add():
         assert c.args[0] != "add", "Should not re-add existing address"
 
 
-def test_apply_interface_removes_stale_address():
-    stale = MagicMock()
-    stale.get_attr.return_value = "192.168.1.1"
-    stale.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
+def test_apply_interface_does_not_remove_os_address():
+    """An address NOS never applied must not be removed, even when NOS configures a different one."""
+    os_addr = MagicMock()
+    os_addr.get_attr.return_value = "192.168.1.1"
+    os_addr.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
 
     ip = MagicMock()
     ip.link_lookup.return_value = [2]
-    ip.addr.side_effect = lambda *a, **kw: [stale] if a[0] == "dump" else None
+    ip.addr.side_effect = lambda *a, **kw: [os_addr] if a[0] == "dump" else None
     ip.link.return_value = []
 
     driver = _make_driver(ip)
-    # New config has a different address.
     driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
 
-    ip.addr.assert_any_call("del", index=2, address="192.168.1.1", prefixlen=24)
+    for c in ip.addr.call_args_list:
+        assert not (c.args[0] == "del" and c.kwargs.get("address") == "192.168.1.1"), (
+            "NOS must not remove an address it did not apply"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -193,19 +209,22 @@ def test_sync_interface_addresses_adds_new_address():
     ip.addr.assert_any_call("add", index=2, address="10.0.0.1", prefixlen=24)
 
 
-def test_sync_interface_addresses_removes_stale_address():
-    stale = MagicMock()
-    stale.get_attr.return_value = "10.1.1.1"
-    stale.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
+def test_sync_interface_addresses_does_not_remove_os_address():
+    """Empty NOS config must not remove addresses set by the OS (netplan/DHCP)."""
+    os_addr = MagicMock()
+    os_addr.get_attr.return_value = "10.1.1.1"
+    os_addr.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
 
     ip = MagicMock()
     ip.link_lookup.return_value = [2]
-    ip.addr.side_effect = lambda *a, **kw: [stale] if a[0] == "dump" else None
+    ip.addr.side_effect = lambda *a, **kw: [os_addr] if a[0] == "dump" else None
     ip.link.return_value = []
 
     driver = _make_driver(ip)
     driver.sync_interface_addresses("eth0", {})
-    ip.addr.assert_any_call("del", index=2, address="10.1.1.1", prefixlen=24)
+    # addr("dump") must not even be called — we return early
+    for c in ip.addr.call_args_list:
+        assert c.args[0] != "del", "NOS must not remove an address it did not apply"
 
 
 def test_sync_interface_addresses_does_not_touch_link_state():
@@ -326,3 +345,98 @@ def test_apply_subinterface_skips_when_no_vlan_id(caplog):
     assert "vlan_id" in caplog.text
     for c in ip.link.call_args_list:
         assert c.args[0] != "add"
+
+
+# ---------------------------------------------------------------------------
+# NOS-managed address tracking — non-interference with OS addresses
+# ---------------------------------------------------------------------------
+
+def test_nos_managed_address_is_removed_when_not_in_new_config():
+    """Address NOS previously applied must be removed when dropped from config."""
+    # Seed: NOS previously applied 192.168.1.1/24
+    _iface_mod._nos_managed_addresses["eth0"] = {("192.168.1.1", 24)}
+
+    stale = MagicMock()
+    stale.get_attr.return_value = "192.168.1.1"
+    stale.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [stale] if a[0] == "dump" else None
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    ip.addr.assert_any_call("del", index=2, address="192.168.1.1", prefixlen=24)
+
+
+def test_sync_removes_nos_managed_address_when_config_cleared():
+    """sync_interface_addresses with empty config removes NOS-managed addresses."""
+    _iface_mod._nos_managed_addresses["eth0"] = {("10.1.1.1", 24)}
+
+    nos_addr = MagicMock()
+    nos_addr.get_attr.return_value = "10.1.1.1"
+    nos_addr.__getitem__ = lambda self, k: 24 if k == "prefixlen" else None
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.sync_interface_addresses("eth0", {})
+
+    ip.addr.assert_any_call("del", index=2, address="10.1.1.1", prefixlen=24)
+
+
+def test_os_address_preserved_when_nos_config_is_empty_and_never_managed():
+    """When NOS has no config and has never touched the interface, addr dump is not called."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("eth0", {})
+
+    for c in ip.addr.call_args_list:
+        assert c.args[0] != "dump", "addr dump must not run when NOS has no config to apply"
+
+
+def test_nos_does_not_remove_os_address_when_applying_alongside_it():
+    """Adding a NOS address must not disturb an OS-set address on the same interface."""
+    os_addr = MagicMock()
+    os_addr.get_attr.return_value = "172.16.0.1"
+    os_addr.__getitem__ = lambda self, k: 16 if k == "prefixlen" else None
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [os_addr] if a[0] == "dump" else None
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    for c in ip.addr.call_args_list:
+        assert not (c.args[0] == "del" and c.kwargs.get("address") == "172.16.0.1"), (
+            "NOS must not remove the OS-assigned address"
+        )
+
+
+def test_nos_managed_set_updated_correctly_after_address_change():
+    """After a config change, only the new address should be in the managed set."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    assert _iface_mod._nos_managed_addresses.get("eth0") == {("10.0.0.1", 30)}
+
+    # Second apply with different address
+    ip.addr.side_effect = lambda *a, **kw: [] if a[0] == "dump" else None
+    driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.5/30": {}}}})
+
+    assert _iface_mod._nos_managed_addresses.get("eth0") == {("10.0.0.5", 30)}

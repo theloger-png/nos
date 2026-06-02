@@ -2,6 +2,17 @@
   "interfaces": {
     "ens33": {
       "description": "internet"
+    },
+    "ens34": {
+      "unit": {
+        "0": {
+          "family_inet": {
+            "address": {
+              "10.0.0.1/24": {}
+            }
+          }
+        }
+      }
     }
   }
 }

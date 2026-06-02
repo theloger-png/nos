@@ -103,9 +103,8 @@ class ConfigApplier:
             cfg = config or {}
             old_cfg = old.get(name) or {}
 
-            if cfg != old_cfg:
-                log.info("Applying interface %s", name)
-                self._kernel.apply_interface(name, cfg)
+            log.info("Applying interface %s", name)
+            self._kernel.apply_interface(name, cfg)
 
             old_units = old_cfg.get("unit") or {}
             new_units = cfg.get("unit") or {}

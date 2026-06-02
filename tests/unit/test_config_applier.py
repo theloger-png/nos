@@ -40,11 +40,12 @@ class TestInterfaces:
         applier.apply({"interfaces": {"eth0": _IFACE_CFG}}, {})
         kernel.delete_interface.assert_called_once_with("eth0")
 
-    def test_unchanged_interface_not_reapplied(self):
+    def test_unchanged_interface_still_reapplied(self):
+        """Commit always enforces config, even when it hasn't changed."""
         applier, kernel, _, _ = _make_applier()
         config = {"interfaces": {"eth0": _IFACE_CFG}}
         applier.apply(config, config)
-        kernel.apply_interface.assert_not_called()
+        kernel.apply_interface.assert_called_once_with("eth0", _IFACE_CFG)
         kernel.delete_interface.assert_not_called()
 
     def test_changed_interface_calls_apply(self):
@@ -60,12 +61,14 @@ class TestInterfaces:
         new = {"interfaces": {"eth0": _IFACE_CFG, "eth1": {"description": "b"}}}
         applier.apply(old, new)
         kernel.delete_interface.assert_not_called()
-        kernel.apply_interface.assert_called_once_with("eth1", {"description": "b"})
+        assert kernel.apply_interface.call_count == 2
+        kernel.apply_interface.assert_any_call("eth0", _IFACE_CFG)
+        kernel.apply_interface.assert_any_call("eth1", {"description": "b"})
 
     def test_none_config_treated_as_empty_dict(self):
         applier, kernel, _, _ = _make_applier()
         applier.apply({"interfaces": {"eth0": None}}, {"interfaces": {"eth0": None}})
-        kernel.apply_interface.assert_not_called()
+        kernel.apply_interface.assert_called_once_with("eth0", {})
 
 
 # ---------------------------------------------------------------------------
