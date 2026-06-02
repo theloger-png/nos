@@ -1263,3 +1263,457 @@ class TestShowForwarding:
         lines = out.splitlines()
         assert lines[0] == _FWD_HDR
         assert lines[1] == f"{'ens33':<13}{'xdp-generic':<14}active"
+
+
+# ============================================================================
+# show ethernet-switching table — helpers
+# ============================================================================
+
+_BR_IDX = 10   # fake bridge ifindex
+_P1_IDX = 2    # fake port-1 (ens33) ifindex
+_P2_IDX = 3    # fake port-2 (ens34) ifindex
+_NUD_REACHABLE = 0x02
+_NUD_PERMANENT = 0x80
+
+
+class _MockFDBEntry:
+    """Stand-in for a pyroute2 ndmsg bridge FDB entry."""
+
+    def __init__(
+        self,
+        mac: str,
+        master: int,
+        port_ifindex: int,
+        vlan_id: int | None = None,
+        state: int = _NUD_REACHABLE,
+    ) -> None:
+        self._a: dict = {
+            "NDA_LLADDR": mac,
+            "NDA_MASTER": master,
+            "NDA_VLAN": vlan_id,
+        }
+        self._i: dict = {"ifindex": port_ifindex, "state": state}
+
+    def get_attr(self, key: str):
+        return self._a.get(key)
+
+    def __getitem__(self, key: str):
+        return self._i[key]
+
+
+def _make_fdb_iproute_mock(
+    links: list,
+    fdb_entries: list,
+    br_ifname: str = "nos-br",
+    br_idx: int = _BR_IDX,
+) -> Mock:
+    """Return an IPRoute mock class that handles FDB dump calls."""
+    instance = Mock()
+    instance.__enter__ = Mock(return_value=instance)
+    instance.__exit__ = Mock(return_value=False)
+    instance.get_links.return_value = links
+    instance.get_addr.return_value = []
+    instance.link_lookup.side_effect = (
+        lambda ifname=None: [br_idx] if ifname == br_ifname else []
+    )
+    instance.fdb.return_value = fdb_entries
+    return Mock(return_value=instance)
+
+
+# ============================================================================
+# show ethernet-switching table — handler
+# ============================================================================
+
+class TestShowEthernetSwitching:
+
+    # ------------------------------------------------------------------
+    # Basic output
+    # ------------------------------------------------------------------
+
+    def test_no_bridge_returns_empty_table(self, oper):
+        # link_lookup returns [] → bridge absent → empty entry list
+        instance = Mock()
+        instance.__enter__ = Mock(return_value=instance)
+        instance.__exit__ = Mock(return_value=False)
+        instance.link_lookup.return_value = []
+        mock_ip = Mock(return_value=instance)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "0 entries" in out
+
+    def test_pyroute2_unavailable_returns_error(self, oper):
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching table")
+        assert "error" in out.lower()
+
+    def test_basic_table_output(self, oper):
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "2 entries" in out
+        assert "aa:bb:cc:dd:ee:ff" in out
+        assert "00:50:56:95:0b:2b" in out
+        assert "ens33" in out
+        assert "ens34" in out
+
+    def test_header_summary_line_format(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert out.startswith("Ethernet switching table:")
+
+    def test_column_header_present(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "VLAN" in out
+        assert "MAC address" in out
+        assert "Type" in out
+        assert "Interfaces" in out
+
+    def test_learn_type_shown(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "Learn" in out
+
+    def test_no_entries_no_column_header(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "MAC address" not in out
+
+    # ------------------------------------------------------------------
+    # Filtering — multicast / all-zeros / permanent
+    # ------------------------------------------------------------------
+
+    def test_multicast_mac_filtered(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [
+            _MockFDBEntry("01:00:5e:00:00:01", _BR_IDX, _P1_IDX, vlan_id=101),  # multicast
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),  # unicast
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "01:00:5e" not in out
+        assert "aa:bb:cc:dd:ee:ff" in out
+        assert "1 entries" in out
+
+    def test_all_zeros_mac_filtered(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [
+            _MockFDBEntry("00:00:00:00:00:00", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "00:00:00:00:00:00" not in out
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_permanent_entries_filtered(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:00:00:01", _BR_IDX, _P1_IDX, vlan_id=101,
+                          state=_NUD_PERMANENT),
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101,
+                          state=_NUD_REACHABLE),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "aa:bb:cc:00:00:01" not in out
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_entries_from_other_bridges_filtered(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        other_br_idx = 99
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", other_br_idx, _P1_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "aa:bb:cc:dd:ee:ff" not in out
+        assert "0 entries" in out
+
+    # ------------------------------------------------------------------
+    # VLAN name mapping
+    # ------------------------------------------------------------------
+
+    def test_vlan_id_mapped_to_config_name(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set vlans vlan101 vlan-id 101")
+        engine.commit()
+
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "vlan101" in out
+
+    def test_unknown_vlan_id_shown_as_vlanN(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=999)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "vlan999" in out
+
+    def test_no_vlan_shown_as_default(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=None)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        assert "default" in out
+
+    # ------------------------------------------------------------------
+    # Filter by interface
+    # ------------------------------------------------------------------
+
+    def test_filter_interface_keeps_matching(self, oper):
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table interface ens33")
+        assert "aa:bb:cc:dd:ee:ff" in out
+        assert "00:50:56:95:0b:2b" not in out
+        assert "1 entries" in out
+
+    def test_filter_interface_no_match(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table interface ens99")
+        assert "0 entries" in out
+
+    # ------------------------------------------------------------------
+    # Filter by VLAN
+    # ------------------------------------------------------------------
+
+    def test_filter_vlan_by_numeric_id(self, oper):
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=200),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table vlan 101")
+        assert "aa:bb:cc:dd:ee:ff" in out
+        assert "00:50:56:95:0b:2b" not in out
+
+    def test_filter_vlan_by_vlan_prefix(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table vlan vlan101")
+        assert "aa:bb:cc:dd:ee:ff" in out
+
+    def test_filter_vlan_by_config_name(self, oper, engine):
+        cm = ConfigureMode(oper.store, engine)
+        cm.execute("set vlans corp vlan-id 101")
+        engine.commit()
+
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=200),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table vlan corp")
+        assert "aa:bb:cc:dd:ee:ff" in out
+        assert "00:50:56:95:0b:2b" not in out
+
+    def test_filter_vlan_unknown_returns_error(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table vlan nonexistent")
+        assert "error" in out.lower()
+
+    # ------------------------------------------------------------------
+    # Summary
+    # ------------------------------------------------------------------
+
+    def test_summary_no_individual_macs(self, oper):
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table summary")
+        assert "aa:bb:cc" not in out
+        assert "2 entries" in out
+
+    def test_summary_counts_per_vlan(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("aa:bb:cc:dd:ee:00", _BR_IDX, _P1_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table summary")
+        assert "2" in out  # count
+        assert "VLAN" in out
+
+    def test_summary_counts_per_interface(self, oper):
+        links = [
+            _MockLink("ens33", _P1_IDX, 0, 1500, "UP"),
+            _MockLink("ens34", _P2_IDX, 0, 1500, "UP"),
+        ]
+        fdb = [
+            _MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2b", _BR_IDX, _P2_IDX, vlan_id=101),
+            _MockFDBEntry("00:50:56:95:0b:2c", _BR_IDX, _P2_IDX, vlan_id=101),
+        ]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table summary")
+        assert "ens33" in out
+        assert "ens34" in out
+        assert "Interface" in out
+
+    def test_summary_empty_table(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table summary")
+        assert "0 entries" in out
+
+    # ------------------------------------------------------------------
+    # Error paths
+    # ------------------------------------------------------------------
+
+    def test_missing_table_keyword_shows_help(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching")
+        assert "table" in out.lower()
+
+    def test_unknown_sub_option_returns_error(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table bogus")
+        assert "error" in out.lower()
+
+    def test_interface_without_arg_returns_error(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table interface")
+        assert "error" in out.lower()
+
+    def test_vlan_without_arg_returns_error(self, oper):
+        mock_ip = _make_fdb_iproute_mock([], [])
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table vlan")
+        assert "error" in out.lower()
+
+    def test_kernel_error_returns_error_message(self, oper):
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.link_lookup.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show ethernet-switching table")
+        assert "error" in out.lower()
+
+    # ------------------------------------------------------------------
+    # Column alignment
+    # ------------------------------------------------------------------
+
+    def test_exact_column_format(self, oper):
+        links = [_MockLink("ens33", _P1_IDX, 0, 1500, "UP")]
+        fdb = [_MockFDBEntry("aa:bb:cc:dd:ee:ff", _BR_IDX, _P1_IDX, vlan_id=101)]
+        mock_ip = _make_fdb_iproute_mock(links, fdb)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show ethernet-switching table")
+        data_line = [ln for ln in out.splitlines() if "aa:bb:cc" in ln][0]
+        assert data_line == f"{'vlan101':<12}{'aa:bb:cc:dd:ee:ff':<19}{'Learn':<10}{'0':<5}ens33"
+
+
+# ============================================================================
+# show ethernet-switching — tab completion
+# ============================================================================
+
+class TestShowEthernetSwitchingCompletion:
+    def test_show_space_offers_ethernet_switching(self):
+        kws = complete_oper("show ")
+        assert "ethernet-switching" in kws
+
+    def test_show_ethernet_partial_completes(self):
+        kws = complete_oper("show eth")
+        assert "ethernet-switching" in kws
+
+    def test_show_ethernet_switching_space_offers_table(self):
+        kws = complete_oper("show ethernet-switching ")
+        assert "table" in kws
+
+    def test_show_ethernet_switching_table_partial(self):
+        kws = complete_oper("show ethernet-switching tab")
+        assert "table" in kws
+
+    def test_show_ethernet_switching_table_space_offers_sub_cmds(self):
+        kws = complete_oper("show ethernet-switching table ")
+        assert "interface" in kws
+        assert "vlan" in kws
+        assert "summary" in kws
+
+    def test_show_ethernet_switching_table_partial_i(self):
+        kws = complete_oper("show ethernet-switching table i")
+        assert "interface" in kws
+        assert "vlan" not in kws
+        assert "summary" not in kws
+
+    def test_show_ethernet_switching_table_partial_v(self):
+        kws = complete_oper("show ethernet-switching table v")
+        assert "vlan" in kws
+        assert "interface" not in kws
+
+    def test_show_ethernet_switching_table_partial_s(self):
+        kws = complete_oper("show ethernet-switching table s")
+        assert "summary" in kws
+        assert "interface" not in kws
+
+    def test_show_ethernet_switching_table_interface_space_offers_hint(self):
+        kws = complete_oper("show ethernet-switching table interface ")
+        assert any("<interface-name>" in k for k in kws)
+
+    def test_show_ethernet_switching_table_vlan_space_offers_hint(self):
+        kws = complete_oper("show ethernet-switching table vlan ")
+        assert any("<vlan-name-or-id>" in k for k in kws)

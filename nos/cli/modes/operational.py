@@ -14,7 +14,8 @@ try:
 except ImportError:  # pragma: no cover
     IPRoute = None  # type: ignore[assignment,misc]
 
-_IFF_LOOPBACK = 0x8  # Linux IFF_LOOPBACK from <net/if.h>
+_IFF_LOOPBACK = 0x8   # Linux IFF_LOOPBACK from <net/if.h>
+_NUD_PERMANENT = 0x80  # Linux NUD_PERMANENT — static/self FDB entry
 
 _LOG = logging.getLogger(__name__)
 
@@ -31,7 +32,7 @@ console = Console()
 _parser = CommandParser()
 
 _SHOW_SUBCMDS: list[str] = [
-    "bgp", "configuration", "forwarding", "interfaces",
+    "bgp", "configuration", "ethernet-switching", "forwarding", "interfaces",
     "isis", "route", "system", "vlans",
 ]
 
@@ -204,6 +205,8 @@ class OperationalMode:
                 output = self._show_system(sub_args)
             case "forwarding":
                 output = self._show_forwarding()
+            case "ethernet-switching":
+                output = self._show_ethernet_switching(sub_args)
             case "configuration":
                 output = self._show_configuration(sub_args)
                 return _apply_pipe(output, pipe, self._config_for_display_set(sub_args))
@@ -215,14 +218,15 @@ class OperationalMode:
     def _show_help(self) -> str:
         return (
             "Possible completions:\n"
-            "  interfaces     Show interface status and counters\n"
-            "  route          Show routing table\n"
-            "  bgp            Show BGP information\n"
-            "  isis           Show IS-IS information\n"
-            "  vlans          Show VLAN table\n"
-            "  system         Show system information\n"
-            "  forwarding     Show PFE forwarding mode\n"
-            "  configuration  Show running configuration (tree format; use | display set for set commands)\n"
+            "  interfaces          Show interface status and counters\n"
+            "  ethernet-switching  Show Ethernet switching table (bridge FDB / MAC table)\n"
+            "  route               Show routing table\n"
+            "  bgp                 Show BGP information\n"
+            "  isis                Show IS-IS information\n"
+            "  vlans               Show VLAN table\n"
+            "  system              Show system information\n"
+            "  forwarding          Show PFE forwarding mode\n"
+            "  configuration       Show running configuration (tree format; use | display set for set commands)\n"
         )
 
     def _show_interfaces(self, args: list[str]) -> str:
@@ -532,6 +536,195 @@ class OperationalMode:
         if not rows:
             return header + "\n(no interfaces found)"
         return "\n".join([header] + rows)
+
+    # ------------------------------------------------------------------
+    # show ethernet-switching table
+    # ------------------------------------------------------------------
+
+    def _build_vlan_id_map(self) -> dict[int, str]:
+        """Return {vlan_id: display_name} from the running config."""
+        cfg = self.store.get_running()
+        vlans = cfg.get("vlans", {})
+        result: dict[int, str] = {}
+        for name, data in vlans.items():
+            if not isinstance(data, dict):
+                continue
+            vid = data.get("vlan_id") or data.get("vlan-id")
+            if vid is not None:
+                result[int(vid)] = name.replace("_", "-")
+        return result
+
+    def _resolve_vlan_filter(
+        self, vlan_str: str, vlan_map: dict[int, str]
+    ) -> Optional[int]:
+        """Resolve a VLAN name or numeric ID string to an integer VLAN ID.
+
+        Priority: exact name match in config → pure numeric → "vlanNNN" shorthand.
+        """
+        for vid, name in vlan_map.items():
+            if name.lower() == vlan_str.lower():
+                return vid
+        if vlan_str.isdigit():
+            return int(vlan_str)
+        lower = vlan_str.lower()
+        if lower.startswith("vlan") and lower[4:].isdigit():
+            return int(lower[4:])
+        return None
+
+    def _read_fdb_entries(self) -> Optional[list[dict]]:
+        """Dump nos-br bridge FDB entries via pyroute2.
+
+        Filters out multicast MACs, the all-zeros MAC, and NUD_PERMANENT
+        entries (bridge self-entries / statically pinned MACs).
+
+        Returns None if pyroute2 is unavailable or an exception occurs.
+        Returns an empty list if the bridge does not exist.
+        """
+        if IPRoute is None:
+            return None
+
+        try:
+            with IPRoute() as ipr:
+                br_idx_list = ipr.link_lookup(ifname="nos-br")
+                if not br_idx_list:
+                    return []
+                br_idx = br_idx_list[0]
+
+                # Build ifindex → name lookup table for port name resolution.
+                links = ipr.get_links()
+                idx_to_name: dict[int, str] = {}
+                for link in links:
+                    name = link.get_attr("IFLA_IFNAME")
+                    if name:
+                        idx_to_name[link["index"]] = name
+
+                raw = ipr.fdb("dump")
+
+                entries: list[dict] = []
+                for e in raw:
+                    mac = e.get_attr("NDA_LLADDR")
+                    if not mac:
+                        continue
+
+                    # Keep only entries whose master is nos-br.
+                    if e.get_attr("NDA_MASTER") != br_idx:
+                        continue
+
+                    # Skip multicast MACs (first byte has LSB set).
+                    try:
+                        if int(mac.split(":")[0], 16) & 1:
+                            continue
+                    except (ValueError, IndexError):
+                        continue
+
+                    # Skip all-zeros MAC.
+                    if mac == "00:00:00:00:00:00":
+                        continue
+
+                    # Skip permanent entries (bridge's own MACs).
+                    if e["state"] & _NUD_PERMANENT:
+                        continue
+
+                    port_idx = e["ifindex"]
+                    entries.append({
+                        "mac": mac,
+                        "vlan_id": e.get_attr("NDA_VLAN"),
+                        "ifname": idx_to_name.get(port_idx, f"if{port_idx}"),
+                        "type": "Learn",
+                        "age": 0,
+                    })
+
+                return entries
+        except Exception as exc:
+            _LOG.warning("FDB read failed (%s)", exc)
+            return None
+
+    def _render_fdb_table(self, entries: list[dict], vlan_map: dict[int, str]) -> str:
+        n = len(entries)
+        header = f"Ethernet switching table: {n} entries, {n} learned"
+        if not entries:
+            return header
+
+        col_hdr = (
+            f"\n{'VLAN':<12}{'MAC address':<19}{'Type':<10}{'Age':<5}Interfaces"
+        )
+        lines = [header, col_hdr]
+        for e in sorted(entries, key=lambda x: (x.get("vlan_id") or 0, x["mac"])):
+            vid = e.get("vlan_id")
+            vlan_name = vlan_map.get(vid, f"vlan{vid}") if vid is not None else "default"
+            lines.append(
+                f"{vlan_name:<12}{e['mac']:<19}{e['type']:<10}{e['age']:<5}{e['ifname']}"
+            )
+        return "\n".join(lines)
+
+    def _render_fdb_summary(self, entries: list[dict], vlan_map: dict[int, str]) -> str:
+        from collections import defaultdict
+
+        vlan_counts: dict[str, int] = defaultdict(int)
+        iface_counts: dict[str, int] = defaultdict(int)
+        for e in entries:
+            vid = e.get("vlan_id")
+            vlan_name = vlan_map.get(vid, f"vlan{vid}") if vid is not None else "default"
+            vlan_counts[vlan_name] += 1
+            iface_counts[e["ifname"]] += 1
+
+        n = len(entries)
+        lines = [f"Ethernet switching table: {n} entries, {n} learned", ""]
+        lines += [f"{'VLAN':<20}Count", "-" * 30]
+        for vname in sorted(vlan_counts):
+            lines.append(f"{vname:<20}{vlan_counts[vname]}")
+        lines += ["", f"{'Interface':<20}Count", "-" * 30]
+        for iface in sorted(iface_counts):
+            lines.append(f"{iface:<20}{iface_counts[iface]}")
+        return "\n".join(lines)
+
+    def _show_ethernet_switching(self, args: list[str]) -> str:
+        if not args or args[0].lower() != "table":
+            return "Possible completions:\n  table  Show Ethernet switching table\n"
+
+        sub_args = args[1:]
+        filter_ifname: Optional[str] = None
+        filter_vlan: Optional[str] = None
+        show_summary = False
+
+        i = 0
+        while i < len(sub_args):
+            tok = sub_args[i].lower()
+            if tok == "interface":
+                if i + 1 >= len(sub_args):
+                    return "error: 'interface' requires an interface name"
+                filter_ifname = sub_args[i + 1]
+                i += 2
+            elif tok == "vlan":
+                if i + 1 >= len(sub_args):
+                    return "error: 'vlan' requires a VLAN name or ID"
+                filter_vlan = sub_args[i + 1]
+                i += 2
+            elif tok == "summary":
+                show_summary = True
+                i += 1
+            else:
+                return f"error: unknown option '{sub_args[i]}'"
+
+        entries = self._read_fdb_entries()
+        if entries is None:
+            return "error: could not read bridge FDB (pyroute2 unavailable or error)"
+
+        vlan_map = self._build_vlan_id_map()
+
+        if filter_vlan is not None:
+            vid = self._resolve_vlan_filter(filter_vlan, vlan_map)
+            if vid is None:
+                return f"error: unknown VLAN '{filter_vlan}'"
+            entries = [e for e in entries if e.get("vlan_id") == vid]
+
+        if filter_ifname is not None:
+            entries = [e for e in entries if e["ifname"] == filter_ifname]
+
+        if show_summary:
+            return self._render_fdb_summary(entries, vlan_map)
+
+        return self._render_fdb_table(entries, vlan_map)
 
     def _show_configuration(self, args: list[str]) -> str:
         """Show running config in tree format, optionally filtered to a section."""

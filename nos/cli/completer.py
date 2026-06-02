@@ -548,6 +548,7 @@ _TRACEROUTE_OPTS: dict[str, tuple[Optional[str], str]] = {
 
 _SHOW_OPER_ARGS = {
     "interfaces": "Show interface status and counters",
+    "ethernet-switching": "Show Ethernet switching table (bridge FDB / MAC table)",
     "route": "Show routing table",
     "bgp": "Show BGP information",
     "isis": "Show IS-IS information",
@@ -555,6 +556,12 @@ _SHOW_OPER_ARGS = {
     "system": "Show system information",
     "forwarding": "Show PFE forwarding mode",
     "configuration": "Show running configuration (tree format)",
+}
+
+_ETH_SWITCH_TABLE_SUBCMDS: dict[str, str] = {
+    "interface": "Filter by interface name",
+    "vlan":      "Filter by VLAN name or ID",
+    "summary":   "Show per-VLAN and per-interface entry counts",
 }
 
 _OPER_PIPE_VERBS: dict[str, str] = {
@@ -723,6 +730,33 @@ class NOSCompleter(Completer):
                 for kw, meta in _IFACE_SUB_CMDS.items():
                     if kw.startswith(sub_prefix):
                         yield Completion(kw, -len(sub_prefix), display_meta=meta)
+            return
+
+        # "show ethernet-switching table [interface <if>|vlan <v>|summary]"
+        if resolved_sub == "ethernet-switching":
+            eth_rest = rest[1:]
+            eth_prefix = "" if completing_new else (eth_rest[-1] if eth_rest else "")
+            if not eth_rest or (len(eth_rest) == 1 and not completing_new):
+                if "table".startswith(eth_prefix):
+                    yield Completion(
+                        "table", -len(eth_prefix), display_meta="Show MAC/FDB table"
+                    )
+                return
+            if eth_rest[0].lower() == "table":
+                tbl_rest = eth_rest[1:]
+                tbl_prefix = "" if completing_new else (tbl_rest[-1] if tbl_rest else "")
+                if not tbl_rest or (len(tbl_rest) == 1 and not completing_new):
+                    for kw, meta in _ETH_SWITCH_TABLE_SUBCMDS.items():
+                        if kw.startswith(tbl_prefix):
+                            yield Completion(kw, -len(tbl_prefix), display_meta=meta)
+                elif len(tbl_rest) >= 1:
+                    last_kw = tbl_rest[-2] if len(tbl_rest) >= 2 else tbl_rest[0]
+                    # After "interface" or "vlan" offer a value hint
+                    if not completing_new and len(tbl_rest) == 1:
+                        pass  # still typing the keyword itself — handled above
+                    elif completing_new and last_kw.lower() in ("interface", "vlan"):
+                        hint = "<interface-name>" if last_kw.lower() == "interface" else "<vlan-name-or-id>"
+                        yield Completion(hint, display_meta=_ETH_SWITCH_TABLE_SUBCMDS[last_kw.lower()])
             return
 
         # "show configuration [<section-path>] [| <pipe-verb> ...]"
