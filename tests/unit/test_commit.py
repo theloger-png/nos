@@ -275,3 +275,95 @@ def test_max_50_checkpoints_kept(engine):
     # rollback.49 should now hold what was in rollback.48 before commit
     data = json.loads(engine._rollback_path(49).read_text())
     assert data["n"] == 48
+
+
+# ---------------------------------------------------------------------------
+# ConfigApplier integration
+# ---------------------------------------------------------------------------
+
+from unittest.mock import MagicMock, call
+
+
+def _engine_with_applier(tmp_store):
+    applier = MagicMock()
+    engine = CommitEngine(tmp_store, applier=applier)
+    return engine, applier
+
+
+def test_applier_called_after_commit(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    old_running = copy.deepcopy(engine.store.running)
+    engine.store.update_candidate(["system", "host_name"], "r2")
+    engine.commit()
+    applier.apply.assert_called_once()
+    old_arg, new_arg = applier.apply.call_args[0]
+    assert old_arg == old_running
+    assert new_arg["system"]["host_name"] == "r2"
+
+
+def test_applier_receives_pre_commit_state_as_old(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    engine.store.update_candidate(["system", "host_name"], "r2")
+    engine.commit()
+    old_arg, _ = applier.apply.call_args[0]
+    # old_arg must reflect running BEFORE the commit (r1, not r2)
+    assert old_arg["system"]["host_name"] == "r1"
+
+
+def test_applier_not_called_when_commit_validation_fails(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    engine.store.update_candidate(["interfaces", "eth0", "mtu"], 99999)
+    with pytest.raises(CommitError):
+        engine.commit()
+    applier.apply.assert_not_called()
+
+
+def test_applier_failure_does_not_raise_after_commit(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    applier.apply.side_effect = Exception("driver exploded")
+    engine.store.update_candidate(["system", "host_name"], "r2")
+    engine.commit()  # must not raise
+    assert engine.store.running["system"]["host_name"] == "r2"
+
+
+def test_applier_called_after_rollback(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    engine._rollback_dir.mkdir(parents=True, exist_ok=True)
+    engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
+    old_running = copy.deepcopy(engine.store.running)
+    engine.rollback(0)
+    applier.apply.assert_called_once()
+    old_arg, new_arg = applier.apply.call_args[0]
+    assert old_arg == old_running
+    assert new_arg["system"]["host_name"] == "old"
+
+
+def test_applier_failure_does_not_raise_after_rollback(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    applier.apply.side_effect = Exception("pfe gone")
+    engine._rollback_dir.mkdir(parents=True, exist_ok=True)
+    engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
+    engine.rollback(0)  # must not raise
+    assert engine.store.running["system"]["host_name"] == "old"
+
+
+def test_applier_not_called_when_rollback_checkpoint_missing(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    with pytest.raises(RollbackError):
+        engine.rollback(0)
+    applier.apply.assert_not_called()
+
+
+def test_no_applier_commit_works_as_before(tmp_store):
+    engine = CommitEngine(tmp_store)  # no applier
+    engine.store.update_candidate(["system", "host_name"], "r2")
+    engine.commit()
+    assert engine.store.running["system"]["host_name"] == "r2"
+
+
+def test_commit_confirmed_applier_called(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    engine.store.update_candidate(["system", "host_name"], "r2")
+    engine.commit_confirmed(minutes=1)
+    applier.apply.assert_called_once()
+    engine.confirm()

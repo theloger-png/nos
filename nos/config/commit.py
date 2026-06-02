@@ -6,10 +6,13 @@ import logging
 import shutil
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from nos.config.store import ConfigStore
 from nos.config.validator import ConfigValidator, ValidationResult
+
+if TYPE_CHECKING:
+    from nos.config.applier import ConfigApplier
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +43,13 @@ class CommitEngine:
         store: ConfigStore,
         base_dir: Optional[Path] = None,
         validator: Optional[ConfigValidator] = None,
+        applier: Optional[ConfigApplier] = None,
     ) -> None:
         self.store = store
         self.base_dir: Path = Path(base_dir) if base_dir is not None else store.base_dir
         self._rollback_dir = self.base_dir / "config" / "rollback"
         self._validator = validator or ConfigValidator()
+        self._applier = applier
         self._confirmed_timer: Optional[threading.Timer] = None
         self._timer_lock = threading.Lock()
 
@@ -78,7 +83,13 @@ class CommitEngine:
     def _do_commit(self) -> None:
         """Internal: rotate rollbacks and promote candidate → running."""
         self._rotate_rollbacks()
+        old_config = copy.deepcopy(self.store.running)
         self.store.commit()
+        if self._applier is not None:
+            try:
+                self._applier.apply(old_config, self.store.running)
+            except Exception as exc:
+                logger.error("ConfigApplier failed after commit: %s", exc)
 
     # ------------------------------------------------------------------
     # Public API
@@ -105,6 +116,7 @@ class CommitEngine:
         path = self._rollback_path(n)
         if not path.exists():
             raise RollbackError(f"Checkpoint rollback.{n} does not exist")
+        old_config = copy.deepcopy(self.store.running)
         with open(path) as fh:
             config = json.load(fh)
         self.store.running = copy.deepcopy(config)
@@ -112,6 +124,11 @@ class CommitEngine:
         self.store.save_running()
         self.store.save_candidate()
         logger.info("Rolled back to checkpoint %d", n)
+        if self._applier is not None:
+            try:
+                self._applier.apply(old_config, self.store.running)
+            except Exception as exc:
+                logger.error("ConfigApplier failed after rollback: %s", exc)
 
     def commit_confirmed(self, minutes: int) -> None:
         """Commit and schedule an automatic rollback after *minutes* minutes.
