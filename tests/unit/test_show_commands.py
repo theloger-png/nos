@@ -984,3 +984,137 @@ class TestShowConfigurationPipeCompletion:
     def test_set_offered_after_section_pipe_display(self):
         kws = complete_oper("show configuration interfaces | display ")
         assert "set" in kws
+
+
+# ============================================================================
+# show | display set — configure mode handler
+# ============================================================================
+
+class TestShowSectionConfigureDisplaySet:
+    def _setup(self, conf):
+        conf.execute("set system host-name nos01")
+        conf.execute("set interfaces eth0 description internet")
+        conf.execute("set interfaces eth0 family inet address 10.0.0.1/30")
+        conf.execute("set vlans vlan100 vlan-id 100")
+        conf.execute("set routing-options router-id 1.1.1.1")
+
+    def test_display_set_full_config_is_set_commands(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show | display set")
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        assert all(ln.startswith("set ") for ln in lines)
+
+    def test_display_set_full_config_contains_all_sections(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show | display set")
+        assert "set system host-name" in out
+        assert "set interfaces" in out
+        assert "set vlans" in out
+        assert "set routing-options" in out
+
+    def test_display_set_interfaces_section_only(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show interfaces | display set")
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        assert all(ln.startswith("set interfaces") for ln in lines)
+        assert not any(ln.startswith("set system") for ln in lines)
+        assert not any(ln.startswith("set vlans") for ln in lines)
+
+    def test_display_set_system_section_only(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show system | display set")
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        assert all(ln.startswith("set system") for ln in lines)
+
+    def test_display_set_interfaces_contains_address(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show interfaces | display set")
+        assert "set interfaces eth0 family inet address 10.0.0.1/30" in out
+
+    def test_display_set_with_edit_path(self, conf, engine):
+        self._setup(conf)
+        conf.edit_path = ["interfaces"]
+        out = conf.execute("show | display set")
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines
+        assert all(ln.startswith("set interfaces") for ln in lines)
+        assert not any(ln.startswith("set system") for ln in lines)
+
+    def test_display_set_output_sorted(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show | display set")
+        lines = [ln for ln in out.splitlines() if ln]
+        assert lines == sorted(lines)
+
+    def test_show_interfaces_except_description(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show interfaces | except description")
+        assert "description" not in out
+        assert "eth0" in out
+
+    def test_show_match_keeps_only_matching_lines(self, conf, engine):
+        self._setup(conf)
+        out = conf.execute("show | match host-name")
+        assert "host-name" in out
+        lines = [ln for ln in out.splitlines() if ln]
+        assert all("host-name" in ln for ln in lines)
+
+
+# ============================================================================
+# Tab completion — show | pipe (configure mode)
+# ============================================================================
+
+class TestShowSectionConfigurePipeCompletion:
+    def test_pipe_offers_display(self):
+        kws = complete_conf("show | ")
+        assert "display" in kws
+
+    def test_pipe_offers_match(self):
+        kws = complete_conf("show | ")
+        assert "match" in kws
+
+    def test_pipe_offers_except(self):
+        kws = complete_conf("show | ")
+        assert "except" in kws
+
+    def test_pipe_offers_find(self):
+        kws = complete_conf("show | ")
+        assert "find" in kws
+
+    def test_pipe_offers_count(self):
+        kws = complete_conf("show | ")
+        assert "count" in kws
+
+    def test_pipe_offers_compare(self):
+        kws = complete_conf("show | ")
+        assert "compare" in kws
+
+    def test_pipe_partial_display(self):
+        kws = complete_conf("show | dis")
+        assert "display" in kws
+        assert "match" not in kws
+
+    def test_display_set_completion(self):
+        kws = complete_conf("show | display ")
+        assert "set" in kws
+
+    def test_display_set_partial(self):
+        kws = complete_conf("show | display s")
+        assert "set" in kws
+
+    def test_pipe_after_section_offers_display(self):
+        kws = complete_conf("show interfaces | ")
+        assert "display" in kws
+        assert "match" in kws
+
+    def test_display_set_after_section(self):
+        kws = complete_conf("show interfaces | display ")
+        assert "set" in kws
+
+    def test_compare_partial_completes(self):
+        kws = complete_conf("show | comp")
+        assert "compare" in kws
+        assert "display" not in kws

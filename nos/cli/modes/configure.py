@@ -334,7 +334,10 @@ class ConfigureMode:
         output = render_block(subtree, depth=0)
         if pipe:
             from nos.cli.modes.operational import _apply_pipe
-            output = _apply_pipe(output, pipe)
+            cfg_for_set: Any = subtree
+            for tok in reversed(display_path):
+                cfg_for_set = {tok.replace("-", "_"): cfg_for_set}
+            output = _apply_pipe(output, pipe, cfg_for_set)
         return output or "(empty)"
 
     def _show_compare(self) -> str:

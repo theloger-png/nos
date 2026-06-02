@@ -566,6 +566,16 @@ _OPER_PIPE_VERBS: dict[str, str] = {
     "no-more": "Disable pagination",
 }
 
+_CONFIGURE_PIPE_VERBS: dict[str, str] = {
+    "compare": "Compare candidate with running config",
+    "display": "Change output format",
+    "match":   "Show lines matching a pattern",
+    "except":  "Show lines not matching a pattern",
+    "find":    "Show lines starting from first match",
+    "count":   "Count output lines",
+    "no-more": "Disable pagination",
+}
+
 _IFACE_SUB_CMDS = {
     "terse": "One-line interface status",
     "description": "Interface descriptions",
@@ -807,14 +817,27 @@ class NOSCompleter(Completer):
     def _complete_show_configure(
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
-        # After "|": only "compare" (and other pipe filters in the future)
         if "|" in rest:
             pipe_idx = rest.index("|")
             after = rest[pipe_idx + 1:]
             prefix = "" if completing_new else (after[-1] if after else "")
-            if "compare".startswith(prefix):
-                yield Completion("compare", -len(prefix),
-                                 display_meta="Compare with running config")
+
+            if not after or (len(after) == 1 and not completing_new):
+                for verb, desc in _CONFIGURE_PIPE_VERBS.items():
+                    if verb.startswith(prefix):
+                        yield Completion(verb, -len(prefix), display_meta=desc)
+            elif after:
+                resolved_verb, _ = resolve_prefix(
+                    after[0].lower(), list(_CONFIGURE_PIPE_VERBS.keys())
+                )
+                if resolved_verb == "display":
+                    sub_prefix = (
+                        "" if completing_new else (after[1] if len(after) > 1 else "")
+                    )
+                    if not after[1:] or (len(after) == 2 and not completing_new):
+                        if "set".startswith(sub_prefix):
+                            yield Completion("set", -len(sub_prefix),
+                                             display_meta="Set commands format")
             return
 
         # Config section path completions, relative to the current edit_path.
