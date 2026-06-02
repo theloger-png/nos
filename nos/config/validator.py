@@ -132,9 +132,8 @@ class ConfigValidator:
                 for member in sw.vlan.members:
                     if member == "all":
                         continue
-                    if member.isdigit():
-                        vid = int(member)
-                        if not (1 <= vid <= 4094):
+                    if isinstance(member, int):
+                        if not (1 <= member <= 4094):
                             result.add_error(path, f"VLAN ID {member!r} out of range (1–4094)")
                     elif member not in vlan_names:
                         result.add_error(

@@ -61,6 +61,24 @@ class ConfigApplier:
 
     # ── section handlers ─────────────────────────────────────────────────────
 
+    def _resolve_vlan_ids(
+        self, members: list, vlans_config: Dict[str, Any]
+    ) -> list:
+        ids = []
+        for m in members:
+            if m == "all":
+                return ["all"]
+            if isinstance(m, int):
+                ids.append(m)
+            elif isinstance(m, str):
+                if m.isdigit():
+                    ids.append(int(m))
+                else:
+                    vlan_id = (vlans_config.get(m) or {}).get("vlan_id")
+                    if vlan_id is not None:
+                        ids.append(vlan_id)
+        return ids
+
     def _apply_interfaces(
         self,
         old: Dict[str, Any],
@@ -94,12 +112,16 @@ class ConfigApplier:
 
             for unit_num_str in set(old_units) - set(new_units):
                 unit_num = int(unit_num_str)
+                old_unit_cfg = old_units.get(unit_num_str) or {}
                 if unit_num == 0:
                     log.info("Clearing addresses on interface %s (unit 0 removed)", name)
                     self._kernel.sync_interface_addresses(name, {})
                 else:
                     log.info("Deleting subinterface %s.%d", name, unit_num)
                     self._kernel.delete_interface(f"{name}.{unit_num}")
+                if old_unit_cfg.get("family_ethernet_switching"):
+                    log.info("Detaching %s from bridge (unit removed)", name)
+                    self._kernel.apply_vlan("nos-br", name, {})
 
             for unit_num_str, unit_cfg in new_units.items():
                 unit_num = int(unit_num_str)
@@ -112,6 +134,19 @@ class ConfigApplier:
                 else:
                     log.info("Applying subinterface %s.%d", name, unit_num)
                     self._kernel.apply_subinterface(name, unit_num, unit_config)
+                sw = unit_config.get("family_ethernet_switching")
+                if sw:
+                    log.info("Applying switchport on %s", name)
+                    self._kernel.apply_bridge("nos-br", {})
+                    vlans_cfg = full_config.get("vlans") or {}
+                    members = (sw.get("vlan") or {}).get("members") or []
+                    if not isinstance(members, list):
+                        members = [members]
+                    vlan_ids = self._resolve_vlan_ids(members, vlans_cfg)
+                    self._kernel.apply_vlan("nos-br", name, {
+                        "interface_mode": sw.get("interface_mode"),
+                        "vlans": vlan_ids,
+                    })
 
     def _apply_vlans(
         self,
@@ -119,17 +154,23 @@ class ConfigApplier:
         new: Dict[str, Any],
         full_config: Dict[str, Any],
     ) -> None:
+        # vlans section is a VLAN database (name→vlan_id mapping).
+        # The single 'nos-br' bridge is managed by _apply_interfaces.
+        # Here we only handle IRB/SVI interfaces when l3_interface is set.
         for name in set(old) - set(new):
-            log.info("Deleting VLAN %s", name)
-            self._kernel.delete_interface(name)
+            old_cfg = old.get(name) or {}
+            svi_name = old_cfg.get("l3_interface")
+            if svi_name:
+                log.info("Deleting SVI %s (VLAN %s removed)", svi_name, name)
+                self._kernel.delete_interface(svi_name)
 
         for name, config in new.items():
             if config != old.get(name):
                 cfg = config or {}
-                log.info("Applying bridge for VLAN %s", name)
-                self._kernel.apply_bridge(name, cfg)
-                for port in cfg.get("members") or []:
-                    self._kernel.apply_vlan(name, port, cfg)
+                svi_name = cfg.get("l3_interface")
+                if svi_name:
+                    log.info("Applying SVI %s for VLAN %s", svi_name, name)
+                    self._kernel.apply_svi(svi_name, {"vlan_id": cfg.get("vlan_id")})
 
     def _apply_routing_options(
         self,

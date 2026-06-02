@@ -3,7 +3,7 @@ from __future__ import annotations
 import ipaddress
 import re
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -168,12 +168,20 @@ class FamilyInet6(BaseModel):
 
 
 class VlanMembers(BaseModel):
-    members: List[str] = []
+    members: List[Union[int, str]] = []
 
     @field_validator("members", mode="before")
     @classmethod
-    def coerce_to_list(cls, v: Any) -> List[str]:
-        return [v] if isinstance(v, str) else v
+    def coerce_to_list(cls, v: Any) -> List[Union[int, str]]:
+        if isinstance(v, (str, int)):
+            v = [v]
+        result: List[Union[int, str]] = []
+        for item in v:
+            if isinstance(item, str) and item.isdigit():
+                result.append(int(item))
+            else:
+                result.append(item)
+        return result
 
 
 class EthernetSwitching(BaseModel):

@@ -21,6 +21,7 @@ def _make_applier(pfe_available: bool = True):
 
 _IFACE_CFG = {"description": "uplink", "mtu": 1500}
 _VLAN_CFG = {"vlan_id": 100, "description": "corp"}
+_VLAN_SVI_CFG = {"vlan_id": 101, "l3_interface": "irb.101"}
 _ROUTE_CFG = {"next_hop": "10.0.0.1"}
 
 
@@ -161,46 +162,53 @@ class TestInterfaceUnits:
 
 # ---------------------------------------------------------------------------
 # VLANs section
+# vlans is a VLAN database (name→vlan_id). Bridges are NOT created here.
+# Only IRB/SVI interfaces are managed when l3_interface is set.
 # ---------------------------------------------------------------------------
 
 class TestVlans:
-    def test_new_vlan_calls_apply_bridge(self):
+    def test_new_vlan_without_l3_interface_does_nothing(self):
         applier, kernel, _, _ = _make_applier()
         applier.apply({}, {"vlans": {"vlan100": _VLAN_CFG}})
-        kernel.apply_bridge.assert_called_once_with("vlan100", _VLAN_CFG)
+        kernel.apply_bridge.assert_not_called()
+        kernel.apply_svi.assert_not_called()
+        kernel.delete_interface.assert_not_called()
 
-    def test_removed_vlan_calls_delete_interface(self):
+    def test_new_vlan_with_l3_interface_calls_apply_svi(self):
+        applier, kernel, _, _ = _make_applier()
+        applier.apply({}, {"vlans": {"vlan101": _VLAN_SVI_CFG}})
+        kernel.apply_svi.assert_called_once_with("irb.101", {"vlan_id": 101})
+
+    def test_removed_vlan_without_l3_interface_does_nothing(self):
         applier, kernel, _, _ = _make_applier()
         applier.apply({"vlans": {"vlan100": _VLAN_CFG}}, {})
-        kernel.delete_interface.assert_called_once_with("vlan100")
+        kernel.delete_interface.assert_not_called()
+
+    def test_removed_vlan_with_l3_interface_deletes_svi(self):
+        applier, kernel, _, _ = _make_applier()
+        applier.apply({"vlans": {"vlan101": _VLAN_SVI_CFG}}, {})
+        kernel.delete_interface.assert_called_once_with("irb.101")
 
     def test_unchanged_vlan_not_reapplied(self):
         applier, kernel, _, _ = _make_applier()
-        config = {"vlans": {"vlan100": _VLAN_CFG}}
+        config = {"vlans": {"vlan101": _VLAN_SVI_CFG}}
         applier.apply(config, config)
-        kernel.apply_bridge.assert_not_called()
+        kernel.apply_svi.assert_not_called()
 
-    def test_changed_vlan_calls_apply_bridge(self):
+    def test_changed_vlan_with_l3_interface_calls_apply_svi(self):
+        applier, kernel, _, _ = _make_applier()
+        old = {"vlans": {"vlan101": {"vlan_id": 101, "l3_interface": "irb.101"}}}
+        new = {"vlans": {"vlan101": {"vlan_id": 101, "l3_interface": "irb.101", "description": "mgmt"}}}
+        applier.apply(old, new)
+        kernel.apply_svi.assert_called_once_with("irb.101", {"vlan_id": 101})
+
+    def test_changed_vlan_without_l3_interface_does_nothing(self):
         applier, kernel, _, _ = _make_applier()
         old = {"vlans": {"vlan100": {"vlan_id": 100}}}
         new = {"vlans": {"vlan100": {"vlan_id": 100, "description": "updated"}}}
         applier.apply(old, new)
-        kernel.apply_bridge.assert_called_once_with(
-            "vlan100", {"vlan_id": 100, "description": "updated"}
-        )
-
-    def test_vlan_with_members_calls_apply_vlan(self):
-        applier, kernel, _, _ = _make_applier()
-        vlan_cfg = {"vlan_id": 100, "members": ["eth1", "eth2"]}
-        applier.apply({}, {"vlans": {"vlan100": vlan_cfg}})
-        assert kernel.apply_vlan.call_count == 2
-        kernel.apply_vlan.assert_any_call("vlan100", "eth1", vlan_cfg)
-        kernel.apply_vlan.assert_any_call("vlan100", "eth2", vlan_cfg)
-
-    def test_vlan_without_members_does_not_call_apply_vlan(self):
-        applier, kernel, _, _ = _make_applier()
-        applier.apply({}, {"vlans": {"vlan100": _VLAN_CFG}})
-        kernel.apply_vlan.assert_not_called()
+        kernel.apply_svi.assert_not_called()
+        kernel.apply_bridge.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -330,21 +338,21 @@ class TestSectionIsolation:
         kernel.apply_interface.side_effect = RuntimeError("kernel exploded")
         new = {
             "interfaces": {"eth0": _IFACE_CFG},
-            "vlans": {"vlan100": _VLAN_CFG},
+            "vlans": {"vlan101": _VLAN_SVI_CFG},
         }
         applier.apply({}, new)  # must not raise
-        kernel.apply_bridge.assert_called_once()
+        kernel.apply_svi.assert_called_once_with("irb.101", {"vlan_id": 101})
 
     def test_all_sections_fail_raises_config_apply_error(self):
         applier, kernel, frr, pfe = _make_applier()
         kernel.apply_interface.side_effect = RuntimeError("fail")
-        kernel.apply_bridge.side_effect = RuntimeError("fail")
+        kernel.apply_svi.side_effect = RuntimeError("fail")
         kernel.apply_route.side_effect = RuntimeError("fail")
         frr.write_frr_conf.side_effect = RuntimeError("fail")
 
         new = {
             "interfaces": {"eth0": _IFACE_CFG},
-            "vlans": {"vlan100": _VLAN_CFG},
+            "vlans": {"vlan101": _VLAN_SVI_CFG},
             "routing_options": {"static": {"route": {"10.0.0.0/24": _ROUTE_CFG}}},
             "protocols": {"isis": {"interface": {"eth0": {}}}},
         }
@@ -355,12 +363,12 @@ class TestSectionIsolation:
         """One passing section is enough to suppress ConfigApplyError."""
         applier, kernel, frr, _ = _make_applier()
         kernel.apply_interface.side_effect = RuntimeError("fail")
-        kernel.apply_bridge.side_effect = RuntimeError("fail")
+        kernel.apply_svi.side_effect = RuntimeError("fail")
         frr.write_frr_conf.side_effect = RuntimeError("fail")
 
         new = {
             "interfaces": {"eth0": _IFACE_CFG},
-            "vlans": {"vlan100": _VLAN_CFG},
+            "vlans": {"vlan101": _VLAN_SVI_CFG},
             "routing_options": {"static": {"route": {"10.0.0.0/24": _ROUTE_CFG}}},
             "protocols": {"isis": {"interface": {"eth0": {}}}},
         }
@@ -377,3 +385,117 @@ class TestSectionIsolation:
         kernel.delete_route.assert_not_called()
         frr.write_frr_conf.assert_not_called()
         pfe.fib.route_add.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Switchport (family_ethernet_switching) handling
+# ---------------------------------------------------------------------------
+
+class TestSwitchport:
+    def _sw_iface(self, mode: str, members: list, vlans: dict = None) -> dict:
+        new_cfg = {
+            "interfaces": {
+                "eth1": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": mode,
+                                "vlan": {"members": members},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if vlans is not None:
+            new_cfg["vlans"] = vlans
+        return new_cfg
+
+    def test_new_switchport_calls_apply_bridge(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply({}, cfg)
+        kernel.apply_bridge.assert_any_call("nos-br", {})
+
+    def test_new_switchport_resolves_vlan_name_to_id(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "eth1", {"interface_mode": "access", "vlans": [100]}
+        )
+
+    def test_new_switchport_with_numeric_string_member(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("access", ["101"])
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "eth1", {"interface_mode": "access", "vlans": [101]}
+        )
+
+    def test_new_switchport_with_integer_member(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("trunk", [100, 200])
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "eth1", {"interface_mode": "trunk", "vlans": [100, 200]}
+        )
+
+    def test_new_switchport_with_all_member(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("trunk", ["all"])
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "eth1", {"interface_mode": "trunk", "vlans": ["all"]}
+        )
+
+    def test_unchanged_switchport_not_reapplied(self):
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply(cfg, cfg)
+        kernel.apply_bridge.assert_not_called()
+        kernel.apply_vlan.assert_not_called()
+
+    def test_removed_switchport_unit_detaches_from_bridge(self):
+        applier, kernel, _, _ = _make_applier()
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        new = {"interfaces": {"eth1": {}}}
+        applier.apply(old, new)
+        kernel.apply_vlan.assert_called_with("nos-br", "eth1", {})
+
+    def test_removed_interface_with_switchport_calls_delete(self):
+        applier, kernel, _, _ = _make_applier()
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply(old, {})
+        kernel.delete_interface.assert_any_call("eth1")
+
+    def test_vlan_name_not_in_vlans_config_produces_empty_vlan_ids(self):
+        """If the referenced VLAN name doesn't exist in vlans, vlans list is empty."""
+        applier, kernel, _, _ = _make_applier()
+        cfg = self._sw_iface("access", ["ghost_vlan"])
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "eth1", {"interface_mode": "access", "vlans": []}
+        )
+
+    def test_bare_integer_member_not_wrapped_in_list(self):
+        """Config written before schema coercion may store members as a bare int."""
+        applier, kernel, _, _ = _make_applier()
+        cfg = {
+            "interfaces": {
+                "ens34": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": 101},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        applier.apply({}, cfg)
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "ens34", {"interface_mode": "access", "vlans": [101]}
+        )

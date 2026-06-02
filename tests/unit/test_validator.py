@@ -691,3 +691,89 @@ def test_policy_term_defined_prefix_list_valid():
             }
         }
     )
+
+
+# ---------------------------------------------------------------------------
+# VLAN members — numeric string and integer IDs
+# ---------------------------------------------------------------------------
+
+def test_vlan_member_numeric_string_converts_and_is_valid():
+    """A numeric string like '101' should be accepted and treated as VLAN ID 101."""
+    assert_valid(
+        {
+            "interfaces": {
+                "eth0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": ["101"]},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
+def test_vlan_member_integer_id_is_valid():
+    """An integer VLAN ID in members should be accepted directly."""
+    assert_valid(
+        {
+            "interfaces": {
+                "eth0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "trunk",
+                                "vlan": {"members": [100, 200]},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
+def test_vlan_member_integer_out_of_range_fails():
+    """An integer VLAN ID outside 1–4094 should be rejected."""
+    assert_invalid(
+        {
+            "interfaces": {
+                "eth0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": [5000]},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        msg_contains="out of range",
+    )
+
+
+def test_vlan_member_numeric_string_out_of_range_fails():
+    """A numeric string like '4095' should be rejected as out of range."""
+    assert_invalid(
+        {
+            "interfaces": {
+                "eth0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": ["4095"]},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        msg_contains="out of range",
+    )
