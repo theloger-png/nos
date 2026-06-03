@@ -1,8 +1,5 @@
 {
   "interfaces": {
-    "ens33": {
-      "description": "internet"
-    },
     "ens34": {
       "unit": {
         "0": {
