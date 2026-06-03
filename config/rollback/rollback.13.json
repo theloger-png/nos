@@ -4,11 +4,7 @@
       "description": "internet"
     },
     "ens34": {
-      "unit": {
-        "101": {
-          "vlan_id": 101
-        }
-      }
+      "unit": {}
     }
   }
 }

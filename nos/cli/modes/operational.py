@@ -457,14 +457,20 @@ class OperationalMode:
             _LOG.warning("kernel interface read failed (%s); showing config-only data", exc)
             return self._show_interfaces_config_only()
 
-        # Build index -> ["addr/prefix", ...] map (IPv4 only)
+        # Build index -> ["addr/prefix", ...] maps for IPv4 and IPv6
         addr_map: dict[int, list[str]] = {}
+        addr6_map: dict[int, list[str]] = {}
         for addr in addrs:
+            idx = addr["index"]
             if addr["family"] == 2:  # AF_INET
-                idx = addr["index"]
                 ip = addr.get_attr("IFA_ADDRESS")
                 prefix = addr["prefixlen"]
                 addr_map.setdefault(idx, []).append(f"{ip}/{prefix}")
+            elif addr["family"] == 10:  # AF_INET6
+                ip = addr.get_attr("IFA_ADDRESS")
+                if ip and not ip.lower().startswith("fe80"):  # Skip link-local
+                    prefix = addr["prefixlen"]
+                    addr6_map.setdefault(idx, []).append(f"{ip}/{prefix}")
 
         include_lo = "lo" in args
 
@@ -497,6 +503,8 @@ class OperationalMode:
             lines.append(f"  Link-level type: Ethernet, MTU: {mtu}")
             for addr_str in addr_map.get(idx, []):
                 lines.append(f"  Inet  {addr_str}")
+            for addr_str in addr6_map.get(idx, []):
+                lines.append(f"  Inet6  {addr_str}")
             lines.append("")
 
         if not lines:
@@ -551,12 +559,18 @@ class OperationalMode:
             return None
 
         addr_map: dict[int, list[str]] = {}
+        addr6_map: dict[int, list[str]] = {}
         for addr in addrs:
+            idx = addr["index"]
             if addr["family"] == 2:  # AF_INET
-                idx = addr["index"]
                 ip = addr.get_attr("IFA_ADDRESS")
                 prefix = addr["prefixlen"]
                 addr_map.setdefault(idx, []).append(f"{ip}/{prefix}")
+            elif addr["family"] == 10:  # AF_INET6
+                ip = addr.get_attr("IFA_ADDRESS")
+                if ip and not ip.lower().startswith("fe80"):  # Skip link-local
+                    prefix = addr["prefixlen"]
+                    addr6_map.setdefault(idx, []).append(f"{ip}/{prefix}")
 
         rows: list[dict] = []
         for link in sorted(links, key=lambda l: l.get_attr("IFLA_IFNAME") or ""):
@@ -573,13 +587,15 @@ class OperationalMode:
 
             disabled = iface_cfg.get("disable", False)
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
+            idx = link["index"]
             rows.append({
                 "name": name,
                 "admin": "down" if disabled else "up",
                 "link": "up" if operstate == "UP" else "down",
                 "mtu": iface_cfg.get("mtu", link.get_attr("IFLA_MTU") or 1500),
                 "desc": iface_cfg.get("description", ""),
-                "addrs": addr_map.get(link["index"], []),
+                "addrs": addr_map.get(idx, []),
+                "addrs6": addr6_map.get(idx, []),
             })
         return rows
 
@@ -602,6 +618,7 @@ class OperationalMode:
                 "mtu": data.get("mtu", 1500),
                 "desc": data.get("description", ""),
                 "addrs": addrs,
+                "addrs6": [],
             })
         return rows
 
@@ -618,14 +635,22 @@ class OperationalMode:
             name = row["name"]
             admin = row["admin"]
             link = row["link"]
+            unit = f"{name}.0"
             # Physical interface row — link is the last field (no padding)
             lines.append(f"{name:<24}{admin:<6}{link}")
-            # Logical unit row(s) — one per IPv4 address, JunOS .0 convention
-            for i, ip in enumerate(row["addrs"]):
+            # IPv4 logical unit rows
+            for i, ip in enumerate(row.get("addrs", [])):
                 if i == 0:
-                    unit = f"{name}.0"
                     lines.append(
                         f"{unit:<24}{admin:<6}{link:<5}{'inet':<9}{ip}"
+                    )
+                else:
+                    lines.append(f"{'':44}{ip}")
+            # IPv6 logical unit rows (rendered after IPv4)
+            for i, ip in enumerate(row.get("addrs6", [])):
+                if i == 0:
+                    lines.append(
+                        f"{unit:<24}{admin:<6}{link:<5}{'inet6':<9}{ip}"
                     )
                 else:
                     lines.append(f"{'':44}{ip}")

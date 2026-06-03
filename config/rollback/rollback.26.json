@@ -13,8 +13,7 @@
             }
           }
         }
-      },
-      "disable": true
+      }
     }
   },
   "vlans": {
