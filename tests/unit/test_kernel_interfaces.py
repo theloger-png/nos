@@ -1,4 +1,5 @@
 """Unit tests for nos.drivers.kernel.interfaces.InterfaceDriver."""
+import json
 from unittest.mock import MagicMock, call
 
 import pytest
@@ -12,9 +13,10 @@ from nos.drivers.kernel.interfaces import InterfaceDriver
 # ---------------------------------------------------------------------------
 
 @pytest.fixture(autouse=True)
-def _clear_nos_managed():
-    """Reset the module-level address-tracking dict between tests."""
+def _clear_nos_managed(monkeypatch, tmp_path):
+    """Reset tracking dict between tests and redirect disk I/O to a temp path."""
     _iface_mod._nos_managed_addresses.clear()
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", tmp_path / "managed.json")
     yield
     _iface_mod._nos_managed_addresses.clear()
 
@@ -560,3 +562,350 @@ def test_apply_svi_skips_when_no_vlan_id_derivable(caplog):
         driver.apply_svi("irb", {})
     assert "vlan_id" in caplog.text
     ip.link_lookup.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# clear_nos_addresses
+# ---------------------------------------------------------------------------
+
+def _make_addr_msg(addr: str, plen: int) -> MagicMock:
+    msg = MagicMock()
+    msg.get_attr.return_value = addr
+    msg.__getitem__ = lambda self, k, _plen=plen: _plen if k == "prefixlen" else None
+    return msg
+
+
+def test_clear_nos_addresses_removes_listed_inet_address():
+    """Addresses in old_config are removed from the kernel."""
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="10.0.0.1", prefixlen=30)
+
+
+def test_clear_nos_addresses_removes_listed_inet6_address():
+    """IPv6 addresses in old_config are removed from the kernel."""
+    nos_addr = _make_addr_msg("2001:db8::1", 64)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet6": {"address": {"2001:db8::1/64": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="2001:db8::1", prefixlen=64)
+
+
+def test_clear_nos_addresses_leaves_unlisted_addresses_alone():
+    """Addresses not in old_config must not be removed."""
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+    other_addr = _make_addr_msg("192.168.1.1", 24)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr, other_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    for c in ip.addr.call_args_list:
+        assert not (c.args[0] == "del" and c.kwargs.get("address") == "192.168.1.1"), (
+            "clear_nos_addresses must not remove addresses absent from old_config"
+        )
+
+
+def test_clear_nos_addresses_noop_when_old_config_has_no_addresses():
+    """With no addresses in old_config, no addr('dump') or addr('del') is issued."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+
+    driver = _make_driver(ip)
+    driver.clear_nos_addresses("eth0", {})
+
+    ip.link_lookup.assert_not_called()
+    ip.addr.assert_not_called()
+
+
+def test_clear_nos_addresses_noop_when_interface_missing(caplog):
+    """Missing interface logs a warning and does nothing."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.clear_nos_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    assert "not found" in caplog.text
+    ip.addr.assert_not_called()
+
+
+def test_clear_nos_addresses_updates_nos_managed_tracking():
+    """Cleared addresses are removed from the NOS-managed tracking set."""
+    _iface_mod._nos_managed_addresses["eth0"] = {("10.0.0.1", 30), ("10.0.0.5", 30)}
+
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    driver.clear_nos_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    assert ("10.0.0.1", 30) not in _iface_mod._nos_managed_addresses["eth0"]
+    assert ("10.0.0.5", 30) in _iface_mod._nos_managed_addresses["eth0"]
+
+
+def test_clear_nos_addresses_removes_both_inet_and_inet6():
+    """Both IPv4 and IPv6 addresses from old_config are removed."""
+    v4_addr = _make_addr_msg("10.0.0.1", 30)
+    v6_addr = _make_addr_msg("2001:db8::1", 64)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [v4_addr, v6_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {
+        "family_inet": {"address": {"10.0.0.1/30": {}}},
+        "family_inet6": {"address": {"2001:db8::1/64": {}}},
+    }
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="10.0.0.1", prefixlen=30)
+    ip.addr.assert_any_call("del", index=2, address="2001:db8::1", prefixlen=64)
+
+
+# ---------------------------------------------------------------------------
+# Persistence — _load_managed_addresses / _save_managed_addresses
+# ---------------------------------------------------------------------------
+
+def test_save_written_after_sync(tmp_path):
+    """Syncing an address writes the tracking state to _STATE_FILE."""
+    ip = _make_ip(existing_addrs=[])
+    driver = _make_driver(ip)
+    driver.sync_interface_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/24": {}}}})
+
+    state_file = tmp_path / "managed.json"
+    assert state_file.exists(), "_STATE_FILE should be written after sync"
+    data = json.loads(state_file.read_text())
+    assert ["10.0.0.1", 24] in data["eth0"]
+
+
+def test_save_not_written_on_early_return(tmp_path):
+    """No file is written when _sync_addresses returns early (nothing to manage)."""
+    ip = _make_ip()
+    driver = _make_driver(ip)
+    driver.sync_interface_addresses("eth0", {})  # empty config, no prior tracking
+
+    assert not (tmp_path / "managed.json").exists()
+
+
+def test_save_written_after_clear(tmp_path):
+    """Clearing addresses writes the updated tracking state to _STATE_FILE."""
+    _iface_mod._nos_managed_addresses["eth0"] = {("10.0.0.1", 30)}
+
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    driver.clear_nos_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    state_file = tmp_path / "managed.json"
+    assert state_file.exists()
+    data = json.loads(state_file.read_text())
+    assert data["eth0"] == []
+
+
+def test_load_populates_from_existing_file(tmp_path, monkeypatch):
+    """_load_managed_addresses restores the tracking dict from a valid JSON file."""
+    state_file = tmp_path / "managed.json"
+    state_file.write_text(json.dumps({"eth0": [["10.0.0.1", 24], ["10.0.0.2", 24]]}))
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", state_file)
+
+    result = _iface_mod._load_managed_addresses()
+
+    assert result == {"eth0": {("10.0.0.1", 24), ("10.0.0.2", 24)}}
+
+
+def test_load_returns_empty_when_file_missing(tmp_path, monkeypatch):
+    """_load_managed_addresses returns {} and logs no warning when file is absent."""
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", tmp_path / "no_such_file.json")
+
+    result = _iface_mod._load_managed_addresses()
+
+    assert result == {}
+
+
+def test_load_returns_empty_and_warns_on_corrupt_file(tmp_path, monkeypatch, caplog):
+    """_load_managed_addresses returns {} and logs a warning for malformed JSON."""
+    state_file = tmp_path / "managed.json"
+    state_file.write_text("not valid json {{{")
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", state_file)
+
+    with caplog.at_level("WARNING"):
+        result = _iface_mod._load_managed_addresses()
+
+    assert result == {}
+    assert "managed.json" in caplog.text
+
+
+def test_save_creates_directory_if_missing(tmp_path, monkeypatch):
+    """_save_managed_addresses creates the parent directory when it does not exist."""
+    state_file = tmp_path / "subdir" / "managed.json"
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", state_file)
+    _iface_mod._nos_managed_addresses["lo"] = {("127.0.0.1", 8)}
+
+    _iface_mod._save_managed_addresses()
+
+    assert state_file.exists()
+
+
+def test_save_content_round_trips_through_load(tmp_path, monkeypatch):
+    """Data written by _save_managed_addresses is faithfully restored by _load."""
+    state_file = tmp_path / "managed.json"
+    monkeypatch.setattr(_iface_mod, "_STATE_FILE", state_file)
+    _iface_mod._nos_managed_addresses["eth0"] = {("10.0.0.1", 30)}
+    _iface_mod._nos_managed_addresses["eth1"] = {("10.0.1.1", 24), ("10.0.1.2", 24)}
+
+    _iface_mod._save_managed_addresses()
+    result = _iface_mod._load_managed_addresses()
+
+    assert result == {
+        "eth0": {("10.0.0.1", 30)},
+        "eth1": {("10.0.1.1", 24), ("10.0.1.2", 24)},
+    }
+
+
+# ---------------------------------------------------------------------------
+# clear_nos_addresses
+# ---------------------------------------------------------------------------
+
+def _make_addr_msg(addr: str, plen: int) -> MagicMock:
+    msg = MagicMock()
+    msg.get_attr.return_value = addr
+    msg.__getitem__ = lambda self, k, _plen=plen: _plen if k == "prefixlen" else None
+    return msg
+
+
+def test_clear_nos_addresses_removes_listed_inet_address():
+    """Addresses in old_config are removed from the kernel."""
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="10.0.0.1", prefixlen=30)
+
+
+def test_clear_nos_addresses_removes_listed_inet6_address():
+    """IPv6 addresses in old_config are removed from the kernel."""
+    nos_addr = _make_addr_msg("2001:db8::1", 64)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet6": {"address": {"2001:db8::1/64": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="2001:db8::1", prefixlen=64)
+
+
+def test_clear_nos_addresses_leaves_unlisted_addresses_alone():
+    """Addresses not in old_config must not be removed."""
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+    other_addr = _make_addr_msg("192.168.1.1", 24)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr, other_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+    driver.clear_nos_addresses("eth0", old_config)
+
+    for c in ip.addr.call_args_list:
+        assert not (c.args[0] == "del" and c.kwargs.get("address") == "192.168.1.1"), (
+            "clear_nos_addresses must not remove addresses absent from old_config"
+        )
+
+
+def test_clear_nos_addresses_noop_when_old_config_has_no_addresses():
+    """With no addresses in old_config, no addr('dump') or addr('del') is issued."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+
+    driver = _make_driver(ip)
+    driver.clear_nos_addresses("eth0", {})
+
+    ip.link_lookup.assert_not_called()
+    ip.addr.assert_not_called()
+
+
+def test_clear_nos_addresses_noop_when_interface_missing(caplog):
+    """Missing interface logs a warning and does nothing."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.clear_nos_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    assert "not found" in caplog.text
+    ip.addr.assert_not_called()
+
+
+def test_clear_nos_addresses_updates_nos_managed_tracking():
+    """Cleared addresses are removed from the NOS-managed tracking set."""
+    _iface_mod._nos_managed_addresses["eth0"] = {("10.0.0.1", 30), ("10.0.0.5", 30)}
+
+    nos_addr = _make_addr_msg("10.0.0.1", 30)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [nos_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    driver.clear_nos_addresses("eth0", {"family_inet": {"address": {"10.0.0.1/30": {}}}})
+
+    assert ("10.0.0.1", 30) not in _iface_mod._nos_managed_addresses["eth0"]
+    assert ("10.0.0.5", 30) in _iface_mod._nos_managed_addresses["eth0"]
+
+
+def test_clear_nos_addresses_removes_both_inet_and_inet6():
+    """Both IPv4 and IPv6 addresses from old_config are removed."""
+    v4_addr = _make_addr_msg("10.0.0.1", 30)
+    v6_addr = _make_addr_msg("2001:db8::1", 64)
+
+    ip = MagicMock()
+    ip.link_lookup.return_value = [2]
+    ip.addr.side_effect = lambda *a, **kw: [v4_addr, v6_addr] if a[0] == "dump" else None
+
+    driver = _make_driver(ip)
+    old_config = {
+        "family_inet": {"address": {"10.0.0.1/30": {}}},
+        "family_inet6": {"address": {"2001:db8::1/64": {}}},
+    }
+    driver.clear_nos_addresses("eth0", old_config)
+
+    ip.addr.assert_any_call("del", index=2, address="10.0.0.1", prefixlen=30)
+    ip.addr.assert_any_call("del", index=2, address="2001:db8::1", prefixlen=64)

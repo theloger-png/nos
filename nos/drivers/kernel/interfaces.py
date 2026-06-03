@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
+import os
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from pyroute2 import IPRoute
@@ -11,9 +14,39 @@ logger = logging.getLogger(__name__)
 # Physical / pre-existing interface name prefixes — skip creation for these.
 _PHYSICAL_PREFIXES = ("eth", "ens", "enp", "eno", "lo", "bond", "team")
 
+_STATE_FILE = Path("/run/nos/managed_addresses.json")
+
+
+def _load_managed_addresses() -> dict[str, set[tuple[str, int]]]:
+    try:
+        raw = json.loads(_STATE_FILE.read_text())
+        return {
+            iface: {(str(addr), int(plen)) for addr, plen in entries}
+            for iface, entries in raw.items()
+        }
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Could not load %s: %s; starting with empty address tracking", _STATE_FILE, exc)
+        return {}
+
+
+def _save_managed_addresses() -> None:
+    try:
+        os.makedirs(_STATE_FILE.parent, exist_ok=True)
+        data = {
+            iface: [list(entry) for entry in entries]
+            for iface, entries in _nos_managed_addresses.items()
+        }
+        _STATE_FILE.write_text(json.dumps(data))
+    except Exception as exc:
+        logger.warning("Could not save managed addresses to %s: %s", _STATE_FILE, exc)
+
+
 # Tracks which (address, prefixlen) tuples NOS has applied per interface name.
 # Only addresses recorded here are candidates for removal; OS/DHCP addresses are left alone.
-_nos_managed_addresses: dict[str, set[tuple[str, int]]] = {}
+# Populated from disk on module load so tracking survives nos-cli restarts.
+_nos_managed_addresses: dict[str, set[tuple[str, int]]] = _load_managed_addresses()
 
 
 class InterfaceDriver:
@@ -51,6 +84,46 @@ class InterfaceDriver:
             self._apply_attrs(ip, idx, config)
             self._sync_addresses(ip, idx, name, config)
             self._apply_state(ip, idx, config)
+
+    def clear_nos_addresses(self, name: str, old_config: Dict[str, Any]) -> None:
+        """Remove only the IP addresses explicitly listed in old_config from the interface.
+
+        Reads family_inet and family_inet6 address keys from old_config and deletes
+        exactly those addresses from the kernel.  Addresses not in old_config are
+        left untouched.
+        """
+        family_inet = (old_config.get("family_inet") or {})
+        family_inet6 = (old_config.get("family_inet6") or {})
+
+        to_remove: list[tuple[str, int]] = []
+        for addr_str in (family_inet.get("address") or {}):
+            net = ipaddress.ip_interface(addr_str)
+            to_remove.append((str(net.ip), net.network.prefixlen))
+        for addr_str in (family_inet6.get("address") or {}):
+            net = ipaddress.ip_interface(addr_str)
+            to_remove.append((str(net.ip), net.network.prefixlen))
+
+        if not to_remove:
+            return
+
+        to_remove_set = set(to_remove)
+        with self._iproute_factory() as ip:
+            idx = self._lookup(ip, name)
+            if idx is None:
+                logger.warning("Interface %s not found; skipping address clear", name)
+                return
+            existing: list[tuple[str, int]] = [
+                (msg.get_attr("IFA_ADDRESS"), msg["prefixlen"])
+                for msg in ip.addr("dump", index=idx)
+            ]
+            for addr, plen in existing:
+                if addr and (addr, plen) in to_remove_set:
+                    ip.addr("del", index=idx, address=addr, prefixlen=plen)
+                    logger.debug("Cleared address %s/%d from %s", addr, plen, name)
+
+        if name in _nos_managed_addresses:
+            _nos_managed_addresses[name] -= to_remove_set
+            _save_managed_addresses()
 
     def sync_interface_addresses(self, name: str, config: Dict[str, Any]) -> None:
         """Sync IP addresses on an existing interface without touching state or attrs."""
@@ -206,6 +279,7 @@ class InterfaceDriver:
 
         # Record exactly what NOS has applied; used to guard removals on future syncs.
         _nos_managed_addresses[iface_name] = desired_set
+        _save_managed_addresses()
 
     @staticmethod
     def _apply_state(ip: IPRoute, idx: int, config: Dict[str, Any]) -> None:

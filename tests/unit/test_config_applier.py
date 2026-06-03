@@ -143,7 +143,7 @@ class TestInterfaceUnits:
         unit_cfg = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
         old = self._iface("ens34", {"0": unit_cfg, "100": {"vlan_id": 100}})
         applier.apply(old, {})
-        kernel.sync_interface_addresses.assert_called_once_with("ens34", {})
+        kernel.clear_nos_addresses.assert_called_once_with("ens34", unit_cfg)
         kernel.delete_interface.assert_any_call("ens34.100")
         kernel.delete_interface.assert_any_call("ens34")
 

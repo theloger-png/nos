@@ -47,8 +47,15 @@ info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root    "${NOS_CONFDIR}"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"
 install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_STATEDIR}"
-install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_RUNDIR}"
+install -d "${NOS_RUNDIR}"
+chown root:"${NOS_USER}" "${NOS_RUNDIR}"
+chmod 775 "${NOS_RUNDIR}"
 ok "Directories ready."
+
+# ── tmpfiles.d — recreate /run/nos on every reboot ──────────────────────────
+info "Installing tmpfiles.d config…"
+echo "d /run/nos 0775 root ${NOS_USER} - -" > /etc/tmpfiles.d/nos.conf
+ok "tmpfiles.d config installed."
 
 # ── 4. build PFE ──────────────────────────────────────────────────────────────
 info "Building PFE (C/XDP)…"

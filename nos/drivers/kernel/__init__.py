@@ -26,6 +26,9 @@ class KernelDriver(BaseDriver):
     def sync_interface_addresses(self, name: str, config: Dict[str, Any]) -> None:
         self._iface.sync_interface_addresses(name, config)
 
+    def clear_nos_addresses(self, name: str, old_config: Dict[str, Any]) -> None:
+        self._iface.clear_nos_addresses(name, old_config)
+
     def apply_subinterface(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
         self._iface.apply_subinterface(parent, unit_num, config)
 

@@ -90,7 +90,7 @@ class ConfigApplier:
             old_units = old_cfg.get("unit") or {}
             if "0" in old_units:
                 log.info("Clearing addresses on interface %s (deleted)", name)
-                self._kernel.sync_interface_addresses(name, {})
+                self._kernel.clear_nos_addresses(name, old_units.get("0") or {})
             for unit_num_str in old_units:
                 unit_num = int(unit_num_str)
                 if unit_num > 0:
