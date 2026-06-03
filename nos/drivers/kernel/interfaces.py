@@ -38,7 +38,8 @@ def _save_managed_addresses() -> None:
             iface: [list(entry) for entry in entries]
             for iface, entries in _nos_managed_addresses.items()
         }
-        _STATE_FILE.write_text(json.dumps(data))
+        with open(_STATE_FILE, 'w') as f:
+            f.write(json.dumps(data))
         _STATE_FILE.chmod(0o664)
     except Exception as exc:
         logger.warning("Could not save managed addresses to %s: %s", _STATE_FILE, exc)
