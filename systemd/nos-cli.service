@@ -5,6 +5,9 @@ After=network.target nos-pfe.service
 
 [Service]
 Type=simple
+ExecStartPre=/bin/chown root:nos /run/nos
+ExecStartPre=/bin/chmod 775 /run/nos
+ExecStartPre=/bin/bash -c 'test -S /run/nos/pfe.sock && chown root:nos /run/nos/pfe.sock && chmod 660 /run/nos/pfe.sock || true'
 ExecStart=/usr/local/bin/nos-cli
 User=nos
 Group=nos
