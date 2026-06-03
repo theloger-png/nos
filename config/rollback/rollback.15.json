@@ -3,5 +3,6 @@
     "ens33": {
       "description": "internet"
     }
-  }
+  },
+  "vlans": {}
 }

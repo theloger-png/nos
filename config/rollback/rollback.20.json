@@ -2,6 +2,14 @@
   "interfaces": {
     "ens33": {
       "description": "internet"
+    },
+    "ens34": {
+      "unit": {}
+    }
+  },
+  "vlans": {
+    "vlan101": {
+      "vlan_id": 101
     }
   }
 }

@@ -107,6 +107,20 @@ int nos_xdp_fwd(struct xdp_md *ctx)
         if (pv && pv->mode == 0) {
             __u16 push_vid = pv->vlan_id;
 
+            /*
+             * Save MACs to the stack NOW.  After bpf_xdp_adjust_head the new
+             * frame head is 4 bytes before the old one, so new_eth->h_dest
+             * [0..5] and old_eth->h_dest [4..9] overlap at bytes 4–5 (same
+             * for h_source at bytes 10–11).  __builtin_memcpy has undefined
+             * behaviour for overlapping regions; LLVM exploits that freedom
+             * and emits a store sequence that corrupts h_dest[0..1].
+             * Stack temporaries have no packet alias, making the post-adjust
+             * copies safe.
+             */
+            __u8 h_dest[ETH_ALEN], h_source[ETH_ALEN];
+            __builtin_memcpy(h_dest,   eth->h_dest,   ETH_ALEN);
+            __builtin_memcpy(h_source, eth->h_source, ETH_ALEN);
+
             if (bpf_xdp_adjust_head(ctx, -4) != 0)
                 return XDP_PASS;
 
@@ -120,14 +134,12 @@ int nos_xdp_fwd(struct xdp_md *ctx)
                 return XDP_PASS;
 
             struct ethhdr      *new_eth = data;
-            struct ethhdr      *old_eth =
-                (struct ethhdr *)((char *)data + 4);
             struct nos_vlanhdr *vh =
                 (struct nos_vlanhdr *)(new_eth + 1);
 
-            /* Slide MAC addresses from old position (+4) to new head. */
-            __builtin_memcpy(new_eth->h_dest,   old_eth->h_dest,   ETH_ALEN);
-            __builtin_memcpy(new_eth->h_source, old_eth->h_source, ETH_ALEN);
+            /* Stack → packet: no overlap, no UB. */
+            __builtin_memcpy(new_eth->h_dest,   h_dest,   ETH_ALEN);
+            __builtin_memcpy(new_eth->h_source, h_source, ETH_ALEN);
             new_eth->h_proto = bpf_htons(ETH_P_8021Q);
             vh->tci          = bpf_htons(push_vid & 0x0FFFu);
             vh->proto        = bpf_htons(proto);   /* original ethertype */
