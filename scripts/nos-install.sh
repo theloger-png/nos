@@ -78,7 +78,7 @@ ok "Venv created."
 
 info "Installing NOS Python package into venv…"
 "${VENV}/bin/pip" install --quiet --upgrade pip
-"${VENV}/bin/pip" install --quiet -e "${REPO_ROOT}"
+"${VENV}/bin/pip" install --quiet "${REPO_ROOT}"
 ok "Python package installed."
 
 # ── 6a. grant cap_net_admin to Python 3.12 ────────────────────────────────────
