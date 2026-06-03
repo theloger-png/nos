@@ -157,10 +157,28 @@ class NOSShell:
 
         @bindings.add(" ")
         def complete_on_space(event):
-            """Insert a space then open the completion menu."""
+            """JunOS-style space: complete unambiguous prefix; show options when ambiguous."""
             buf = event.current_buffer
-            buf.insert_text(" ")
-            buf.start_completion(select_first=False)
+
+            # Active selection in the completion menu → apply it (like Tab)
+            if buf.complete_state and buf.complete_state.current_completion is not None:
+                buf.apply_completion(buf.complete_state.current_completion)
+                return
+
+            doc = buf.document
+            completions = list(
+                completer.get_completions(doc, CompleteEvent(completion_requested=True))
+            )
+
+            if len(completions) == 1 and completions[0].text:
+                # Exactly one non-empty partial match → complete it, then advance
+                buf.apply_completion(completions[0])
+                buf.insert_text(" ")
+            else:
+                # No match, already-complete word, or ambiguous → insert space + show menu
+                buf.insert_text(" ")
+                if completions:
+                    buf.start_completion(select_first=False)
 
         @bindings.add("c-c")
         def handle_ctrl_c(event):
@@ -168,6 +186,13 @@ class NOSShell:
             event.current_buffer.reset()
             event.app.output.write("^C\n")
             event.app.output.flush()
+
+        @bindings.add("c-x")
+        def handle_ctrl_x(event):
+            """Ctrl+X clears the current input line."""
+            buf = event.current_buffer
+            buf.cancel_completion()
+            buf.reset(append_to_history=False)
 
         return bindings
 
