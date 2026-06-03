@@ -47,6 +47,12 @@ class KernelDriver(BaseDriver):
     def detach_port(self, bridge: str, port: str) -> None:
         self._bridge.detach_port(bridge, port)
 
+    def get_bridge_ports(self, bridge_name: str) -> list[str]:
+        return self._bridge.get_bridge_ports(bridge_name)
+
+    def delete_bridge(self, name: str) -> None:
+        self._bridge.delete_bridge(name)
+
     def apply_svi(self, name: str, config: Dict[str, Any]) -> None:
         self._iface.apply_svi(name, config)
 

@@ -176,3 +176,53 @@ def test_delete_bridge_noop_when_not_found():
     driver = _make_driver(ip)
     driver.delete_bridge("nos-br")
     ip.link.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# get_bridge_ports
+# ---------------------------------------------------------------------------
+
+def _make_link(master_idx, ifname):
+    link = MagicMock()
+    link.get_attr.side_effect = lambda k: master_idx if k == "IFLA_MASTER" else (ifname if k == "IFLA_IFNAME" else None)
+    return link
+
+
+def test_get_bridge_ports_returns_attached_interfaces():
+    ip = MagicMock()
+    ip.link_lookup.return_value = [10]
+    ip.get_links.return_value = [
+        _make_link(10, "eth0"),
+        _make_link(10, "eth1"),
+        _make_link(99, "eth2"),  # attached to a different bridge
+    ]
+
+    driver = _make_driver(ip)
+    ports = driver.get_bridge_ports("nos-br")
+
+    assert sorted(ports) == ["eth0", "eth1"]
+
+
+def test_get_bridge_ports_returns_empty_when_bridge_absent():
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    ports = driver.get_bridge_ports("nos-br")
+
+    assert ports == []
+    ip.get_links.assert_not_called()
+
+
+def test_get_bridge_ports_returns_empty_when_no_members():
+    ip = MagicMock()
+    ip.link_lookup.return_value = [10]
+    ip.get_links.return_value = [
+        _make_link(0, "lo"),
+        _make_link(99, "eth3"),
+    ]
+
+    driver = _make_driver(ip)
+    ports = driver.get_bridge_ports("nos-br")
+
+    assert ports == []

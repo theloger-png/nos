@@ -99,6 +99,9 @@ class ConfigApplier:
             if any((unit_cfg or {}).get("family_ethernet_switching") for unit_cfg in old_units.values()):
                 log.info("Detaching %s from bridge (interface deleted)", name)
                 self._kernel.detach_port("nos-br", name)
+                if not self._kernel.get_bridge_ports("nos-br"):
+                    log.info("No ports left on nos-br; deleting bridge")
+                    self._kernel.delete_bridge("nos-br")
             log.info("Deleting interface %s", name)
             self._kernel.delete_interface(name)
 
@@ -124,6 +127,9 @@ class ConfigApplier:
                 if old_unit_cfg.get("family_ethernet_switching"):
                     log.info("Detaching %s from bridge (unit removed)", name)
                     self._kernel.detach_port("nos-br", name)
+                    if not self._kernel.get_bridge_ports("nos-br"):
+                        log.info("No ports left on nos-br; deleting bridge")
+                        self._kernel.delete_bridge("nos-br")
 
             for unit_num_str, unit_cfg in new_units.items():
                 unit_num = int(unit_num_str)

@@ -489,11 +489,41 @@ class TestSwitchport:
         applier.apply(old, new)
         kernel.detach_port.assert_called_with("nos-br", "eth1")
 
+    def test_removed_switchport_unit_deletes_bridge_when_empty(self):
+        applier, kernel, _, _ = _make_applier()
+        kernel.get_bridge_ports.return_value = []
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        new = {"interfaces": {"eth1": {}}}
+        applier.apply(old, new)
+        kernel.delete_bridge.assert_called_once_with("nos-br")
+
+    def test_removed_switchport_unit_keeps_bridge_when_ports_remain(self):
+        applier, kernel, _, _ = _make_applier()
+        kernel.get_bridge_ports.return_value = ["eth2"]
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        new = {"interfaces": {"eth1": {}}}
+        applier.apply(old, new)
+        kernel.delete_bridge.assert_not_called()
+
     def test_removed_interface_with_switchport_calls_delete(self):
         applier, kernel, _, _ = _make_applier()
         old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
         applier.apply(old, {})
         kernel.delete_interface.assert_any_call("eth1")
+
+    def test_removed_interface_with_switchport_deletes_bridge_when_empty(self):
+        applier, kernel, _, _ = _make_applier()
+        kernel.get_bridge_ports.return_value = []
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply(old, {})
+        kernel.delete_bridge.assert_called_once_with("nos-br")
+
+    def test_removed_interface_with_switchport_keeps_bridge_when_ports_remain(self):
+        applier, kernel, _, _ = _make_applier()
+        kernel.get_bridge_ports.return_value = ["eth2"]
+        old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
+        applier.apply(old, {})
+        kernel.delete_bridge.assert_not_called()
 
     def test_vlan_name_not_in_vlans_config_produces_empty_vlan_ids(self):
         """If the referenced VLAN name doesn't exist in vlans, vlans list is empty."""

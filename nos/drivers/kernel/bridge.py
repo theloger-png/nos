@@ -127,6 +127,20 @@ class BridgeDriver:
             ip.link("set", index=port_idx, master=0)
             logger.debug("Detached %s (idx=%d) from bridge", port, port_idx)
 
+    def get_bridge_ports(self, name: str) -> List[str]:
+        """Return names of interfaces currently attached to the bridge."""
+        with self._iproute_factory() as ip:
+            br_idx = self._lookup(ip, name)
+            if br_idx is None:
+                return []
+            ports = []
+            for link in ip.get_links():
+                if (link.get_attr("IFLA_MASTER") or 0) == br_idx:
+                    ifname = link.get_attr("IFLA_IFNAME")
+                    if ifname:
+                        ports.append(ifname)
+            return ports
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
