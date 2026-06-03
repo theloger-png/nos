@@ -96,6 +96,9 @@ class ConfigApplier:
                 if unit_num > 0:
                     log.info("Deleting subinterface %s.%d", name, unit_num)
                     self._kernel.delete_interface(f"{name}.{unit_num}")
+            if any((unit_cfg or {}).get("family_ethernet_switching") for unit_cfg in old_units.values()):
+                log.info("Detaching %s from bridge (interface deleted)", name)
+                self._kernel.detach_port("nos-br", name)
             log.info("Deleting interface %s", name)
             self._kernel.delete_interface(name)
 
@@ -120,7 +123,7 @@ class ConfigApplier:
                     self._kernel.delete_interface(f"{name}.{unit_num}")
                 if old_unit_cfg.get("family_ethernet_switching"):
                     log.info("Detaching %s from bridge (unit removed)", name)
-                    self._kernel.apply_vlan("nos-br", name, {})
+                    self._kernel.detach_port("nos-br", name)
 
             for unit_num_str, unit_cfg in new_units.items():
                 unit_num = int(unit_num_str)

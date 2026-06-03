@@ -4,36 +4,15 @@
       "description": "internet"
     },
     "ens34": {
-      "description": "down",
       "unit": {
         "0": {
-          "family": {
-            "ethernet_switching": {
-              "interface_mode": "trunk",
-              "vlan": {
-                "members": 101
-              }
+          "family_inet": {
+            "address": {
+              "10.0.0.1/24": {}
             }
           }
         }
       }
-    },
-    "irb": {
-      "unit": {
-        "101": {
-          "family": {
-            "inet": {
-              "10.0.0.1/24": true
-            }
-          }
-        }
-      }
-    }
-  },
-  "vlans": {
-    "vlan101": {
-      "vlan_id": 101,
-      "l3_interface": "irb.101"
     }
   }
 }

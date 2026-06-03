@@ -117,6 +117,16 @@ class BridgeDriver:
                     ip.vlan_filter("add", index=port_idx, vlan_info={"vid": vid, "flags": flags})
                 logger.debug("Set trunk VLANs %s (native=%d) on %s", vlans, native, port)
 
+    def detach_port(self, bridge: str, port: str) -> None:
+        """Remove a port from the bridge by setting its master to 0."""
+        with self._iproute_factory() as ip:
+            port_idx = self._lookup(ip, port)
+            if port_idx is None:
+                logger.warning("Port %s not found; skipping detach", port)
+                return
+            ip.link("set", index=port_idx, master=0)
+            logger.debug("Detached %s (idx=%d) from bridge", port, port_idx)
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------

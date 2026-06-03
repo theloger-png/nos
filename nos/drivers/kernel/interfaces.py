@@ -111,6 +111,8 @@ class InterfaceDriver:
 
     @staticmethod
     def _is_physical(name: str) -> bool:
+        if "." in name:
+            return False
         return any(name.startswith(p) for p in _PHYSICAL_PREFIXES)
 
     @staticmethod

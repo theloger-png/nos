@@ -41,6 +41,9 @@ class KernelDriver(BaseDriver):
     def apply_vlan(self, bridge: str, port: str, config: Dict[str, Any]) -> None:
         self._bridge.apply_vlan(bridge, port, config)
 
+    def detach_port(self, bridge: str, port: str) -> None:
+        self._bridge.detach_port(bridge, port)
+
     def apply_svi(self, name: str, config: Dict[str, Any]) -> None:
         pass  # not yet implemented
 
