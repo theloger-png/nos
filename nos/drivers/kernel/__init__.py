@@ -56,5 +56,8 @@ class KernelDriver(BaseDriver):
     def apply_svi(self, name: str, config: Dict[str, Any]) -> None:
         self._iface.apply_svi(name, config)
 
+    def vlan_add_self(self, bridge_name: str, vlan_id: int) -> None:
+        self._bridge.vlan_add_self(bridge_name, vlan_id)
+
 
 __all__ = ["BridgeDriver", "InterfaceDriver", "KernelDriver", "RouteDriver", "VRFDriver"]

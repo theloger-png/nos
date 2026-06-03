@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import subprocess
 from typing import Any, Callable, Dict, List, Optional
 
 from pyroute2 import IPRoute
@@ -119,6 +120,27 @@ class BridgeDriver:
                         flags = _BRIDGE_VLAN_INFO_PVID | _BRIDGE_VLAN_INFO_UNTAGGED
                     ip.vlan_filter("add", index=port_idx, vlan_info={"vid": vid, "flags": flags})
                 logger.debug("Set trunk VLANs %s (native=%d) on %s", vlans, native, port)
+
+    def vlan_add_self(self, bridge_name: str, vlan_id: int) -> None:
+        """Add VLAN to the bridge device itself (equivalent to: bridge vlan add vid <vlan_id> dev <bridge_name> self)."""
+        try:
+            with self._iproute_factory() as ip:
+                br_idx = self._lookup(ip, bridge_name)
+                if br_idx is None:
+                    raise ValueError(f"Bridge {bridge_name!r} does not exist")
+                ip.vlan_filter("add", index=br_idx, vlan_info={"vid": vlan_id, "flags": 0})
+                logger.debug("Added VLAN %d to self-port of bridge %s", vlan_id, bridge_name)
+        except Exception as exc:
+            logger.warning(
+                "pyroute2 vlan_add_self failed (%s); falling back to subprocess", exc
+            )
+            subprocess.run(
+                ["bridge", "vlan", "add", "vid", str(vlan_id), "dev", bridge_name, "self"],
+                check=True,
+            )
+            logger.debug(
+                "Added VLAN %d to self-port of bridge %s (subprocess)", vlan_id, bridge_name
+            )
 
     def detach_port(self, bridge: str, port: str) -> None:
         """Remove a port from the bridge by setting its master to 0."""

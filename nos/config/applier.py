@@ -200,6 +200,8 @@ class ConfigApplier:
                 irb_units = (full_config.get("interfaces") or {}).get("irb", {}).get("unit") or {}
                 unit_cfg = irb_units.get(str(vlan_id)) or {}
                 self._kernel.apply_svi(svi_name, {"vlan_id": vlan_id, **unit_cfg})
+                if vlan_id is not None:
+                    self._kernel.vlan_add_self("nos-br", vlan_id)
 
     def _apply_routing_options(
         self,
