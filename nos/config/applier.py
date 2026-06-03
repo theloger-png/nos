@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from pyroute2 import IPRoute
+
 from nos.drivers.base import BaseDriver
 from nos.drivers.frr.renderer import FRRRenderer
 from nos.pfe.manager import PFEManager
@@ -155,6 +157,23 @@ class ConfigApplier:
                         "interface_mode": sw.get("interface_mode"),
                         "vlans": vlan_ids,
                     })
+                    iface_mode = sw.get("interface_mode")
+                    if (self._pfe.is_available()
+                            and iface_mode in ("access", "trunk")
+                            and len(vlan_ids) == 1
+                            and isinstance(vlan_ids[0], int)):
+                        try:
+                            with IPRoute() as ip:
+                                idx = ip.link_lookup(ifname=name)
+                            if idx:
+                                xdp_mode = 0 if iface_mode == "access" else 1
+                                self._pfe.port_vlan_set(
+                                    idx[0], vlan_ids[0], xdp_mode
+                                )
+                        except Exception as exc:
+                            log.error(
+                                "PFE port_vlan_set failed for %s: %s", name, exc
+                            )
 
     def _apply_vlans(
         self,

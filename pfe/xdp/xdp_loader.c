@@ -47,13 +47,14 @@ static const struct {
     const char *name;   /* matches the C variable name in xdp_prog.c */
     const char *pin;    /* path under BPF FS created by fib.c         */
 } g_map_pins[] = {
-    { "fib4_map",      BPF_FS_DIR "/fib4_map"      },
-    { "fib6_map",      BPF_FS_DIR "/fib6_map"      },
-    { "neigh_map",     BPF_FS_DIR "/neigh_map"      },
-    { "vlan_map",      BPF_FS_DIR "/vlan_map"       },
-    { "stats_map",     BPF_FS_DIR "/stats_map"      },
-    { "local_ip4_map", BPF_FS_DIR "/local_ip4_map"  },
-    { "local_ip6_map", BPF_FS_DIR "/local_ip6_map"  },
+    { "fib4_map",       BPF_FS_DIR "/fib4_map"       },
+    { "fib6_map",       BPF_FS_DIR "/fib6_map"       },
+    { "neigh_map",      BPF_FS_DIR "/neigh_map"       },
+    { "vlan_map",       BPF_FS_DIR "/vlan_map"        },
+    { "stats_map",      BPF_FS_DIR "/stats_map"       },
+    { "local_ip4_map",  BPF_FS_DIR "/local_ip4_map"   },
+    { "local_ip6_map",  BPF_FS_DIR "/local_ip6_map"   },
+    { "port_vlan_map",  BPF_FS_DIR "/port_vlan_map"   },
 };
 
 #define N_MAPS  ((int)(sizeof(g_map_pins) / sizeof(g_map_pins[0])))
@@ -68,10 +69,11 @@ struct iface_entry {
 
 /* ── module state ───────────────────────────────────────────────────────── */
 
-static struct bpf_object  *g_obj     = NULL;
-static struct bpf_program *g_prog    = NULL;
+static struct bpf_object  *g_obj              = NULL;
+static struct bpf_program *g_prog             = NULL;
 static struct iface_entry  g_ifaces[MAX_IFACES];
-static int                 g_nifaces = 0;
+static int                 g_nifaces          = 0;
+static int                 g_port_vlan_map_fd = -1;
 
 /* ── libbpf print redirect ──────────────────────────────────────────────── */
 
@@ -278,6 +280,16 @@ int xdp_loader_init(const char *obj_path)
                      g_map_pins[i].pin, strerror(errno));
     }
 
+    /* Save port_vlan_map fd for runtime updates from userspace. */
+    {
+        struct bpf_map *pvm =
+            bpf_object__find_map_by_name(obj, "port_vlan_map");
+        if (pvm)
+            g_port_vlan_map_fd = bpf_map__fd(pvm);
+        else
+            xdp_warn("port_vlan_map not found — port VLAN tagging unavailable");
+    }
+
     /* Locate the forwarding program by its C function name. */
     struct bpf_program *prog = bpf_object__find_program_by_name(obj, "nos_xdp_fwd");
     if (!prog) {
@@ -307,9 +319,10 @@ void xdp_loader_cleanup(void)
      * fib.c owns them and they should survive for restart re-use.
      */
     bpf_object__close(g_obj);
-    g_obj     = NULL;
-    g_prog    = NULL;
-    g_nifaces = 0;
+    g_obj              = NULL;
+    g_prog             = NULL;
+    g_nifaces          = 0;
+    g_port_vlan_map_fd = -1;
 
     xdp_info("cleaned up");
 }
@@ -378,4 +391,31 @@ int xdp_loader_detach_all(void)
         iface_remove_idx(0);
     }
     return 0;
+}
+
+int xdp_loader_port_vlan_set(__u32 ifindex, __u16 vlan_id, __u8 mode)
+{
+    if (g_port_vlan_map_fd < 0) {
+        xdp_err("port_vlan_set: port_vlan_map not available");
+        errno = EAGAIN;
+        return -1;
+    }
+    struct port_vlan_val val = { .vlan_id = vlan_id, .mode = mode, ._pad = 0 };
+    int rc = bpf_map_update_elem(g_port_vlan_map_fd, &ifindex, &val, BPF_ANY);
+    if (rc < 0)
+        xdp_err("port_vlan_set ifindex=%u: %s", ifindex, strerror(errno));
+    return rc;
+}
+
+int xdp_loader_port_vlan_del(__u32 ifindex)
+{
+    if (g_port_vlan_map_fd < 0) {
+        xdp_err("port_vlan_del: port_vlan_map not available");
+        errno = EAGAIN;
+        return -1;
+    }
+    int rc = bpf_map_delete_elem(g_port_vlan_map_fd, &ifindex);
+    if (rc < 0 && errno != ENOENT)
+        xdp_err("port_vlan_del ifindex=%u: %s", ifindex, strerror(errno));
+    return rc;
 }

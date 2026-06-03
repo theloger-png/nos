@@ -131,6 +131,23 @@ class PFEClient:
         except json.JSONDecodeError as exc:
             raise PFEError(f"PFE returned invalid JSON: {raw!r}") from exc
 
+    def port_vlan_set(self, ifindex: int, vlan_id: int, mode: int) -> None:
+        """Insert or update an entry in the XDP port_vlan_map.
+
+        mode: 0 = access (XDP pushes tag), 1 = trunk (pass through).
+        Raises PFEError on failure.
+        """
+        reply = self.send_message({
+            "type":    "port_vlan_set",
+            "ifindex": ifindex,
+            "vlan_id": vlan_id,
+            "mode":    mode,
+        })
+        if reply.get("status") != "ok":
+            raise PFEError(
+                f"port_vlan_set ifindex={ifindex}: {reply.get('message')}"
+            )
+
     def _readline_locked(self) -> bytes:
         """Read bytes up to and including the next '\\n'.  Caller must hold _lock."""
         while b"\n" not in self._rbuf:

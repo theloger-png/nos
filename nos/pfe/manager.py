@@ -82,6 +82,18 @@ class PFEManager:
         """True if the PFE process was reachable on the last start() call."""
         return self._available
 
+    # ── port VLAN operations ──────────────────────────────────────────────────
+
+    def port_vlan_set(self, ifindex: int, vlan_id: int, mode: int) -> None:
+        """Push ifindex/vlan_id/mode into the XDP port_vlan_map.
+
+        mode: 0 = access, 1 = trunk.  No-op if PFE is unavailable.
+        Raises PFEError on map update failure.
+        """
+        if not self._available:
+            return
+        self._client.port_vlan_set(ifindex, vlan_id, mode)
+
     # ── forwarding mode detection ─────────────────────────────────────────────
 
     def detect_forwarding_mode(self, ifname: str) -> ForwardingMode:

@@ -80,6 +80,19 @@ struct vlan_val {
     __u32 _pad;
 };
 
+/* ── Port VLAN map ───────────────────────────────────────────────────────────
+ *
+ * Keyed by ingress ifindex.  access mode (0): untagged frames receive a VLAN
+ * tag push in the XDP program before XDP_PASS.  trunk mode (1): frames are
+ * already tagged; the XDP program skips tag insertion and continues normally.
+ */
+
+struct port_vlan_val {
+    __u16 vlan_id;  /* 802.1Q VID [1, 4094] */
+    __u8  mode;     /* 0 = access (push tag), 1 = trunk (pass through) */
+    __u8  _pad;
+};
+
 /* ── Interface statistics ────────────────────────────────────────────────────
  *
  * Per-CPU counters keyed by ifindex.  PERCPU_HASH eliminates atomic ops in
@@ -165,6 +178,14 @@ struct {
     __uint(value_size,  sizeof(__u32));
     __uint(max_entries, 256);
 } local_ip6_map SEC(".maps");
+
+/* Per-ingress-port VLAN mode and ID; key = ifindex (__u32) */
+struct {
+    __uint(type,        BPF_MAP_TYPE_HASH);
+    __uint(key_size,    sizeof(__u32));
+    __type(value,       struct port_vlan_val);
+    __uint(max_entries, 1024);
+} port_vlan_map SEC(".maps");
 
 #endif /* __bpf__ */
 

@@ -57,6 +57,8 @@ _SHOW_SUBCMDS: list[str] = [
     "ipv6", "isis", "route", "system", "vlans",
 ]
 
+_ES_SUBCMDS: list[str] = ["flood", "interface", "statistics", "table"]
+
 
 # ============================================================================
 # JunOS option parsers for ping / traceroute
@@ -1007,32 +1009,55 @@ class OperationalMode:
         return "\n".join(lines)
 
     def _show_ethernet_switching(self, args: list[str]) -> str:
-        if not args or args[0].lower() != "table":
-            return "Possible completions:\n  table  Show Ethernet switching table\n"
+        if not args:
+            return (
+                "Possible completions:\n"
+                "  flood       Show flood group membership\n"
+                "  interface   Show per-interface switching information\n"
+                "  statistics  Show per-interface switching statistics\n"
+                "  table       Show Ethernet switching table\n"
+            )
 
-        sub_args = args[1:]
+        sub_raw = args[0].lower()
+        sub, err = resolve_prefix(sub_raw, _ES_SUBCMDS)
+        if err:
+            return f"error: {err}"
+
+        match sub:
+            case "table":
+                return self._show_es_table(args[1:])
+            case "interface":
+                return self._show_es_interface(args[1:])
+            case "statistics":
+                return self._show_es_statistics(args[1:])
+            case "flood":
+                return self._show_es_flood(args[1:])
+            case _:  # pragma: no cover
+                return f"error: unknown ethernet-switching sub-command: {sub!r}"
+
+    def _show_es_table(self, args: list[str]) -> str:
         filter_ifname: Optional[str] = None
         filter_vlan: Optional[str] = None
         show_summary = False
 
         i = 0
-        while i < len(sub_args):
-            tok = sub_args[i].lower()
+        while i < len(args):
+            tok = args[i].lower()
             if tok == "interface":
-                if i + 1 >= len(sub_args):
+                if i + 1 >= len(args):
                     return "error: 'interface' requires an interface name"
-                filter_ifname = sub_args[i + 1]
+                filter_ifname = args[i + 1]
                 i += 2
             elif tok == "vlan":
-                if i + 1 >= len(sub_args):
+                if i + 1 >= len(args):
                     return "error: 'vlan' requires a VLAN name or ID"
-                filter_vlan = sub_args[i + 1]
+                filter_vlan = args[i + 1]
                 i += 2
             elif tok == "summary":
                 show_summary = True
                 i += 1
             else:
-                return f"error: unknown option '{sub_args[i]}'"
+                return f"error: unknown option '{args[i]}'"
 
         entries = self._read_fdb_entries()
         if entries is None:
@@ -1053,6 +1078,199 @@ class OperationalMode:
             return self._render_fdb_summary(entries, vlan_map)
 
         return self._render_fdb_table(entries, vlan_map)
+
+    # ------------------------------------------------------------------
+    # show ethernet-switching interface
+    # ------------------------------------------------------------------
+
+    def _show_es_interface(self, args: list[str]) -> str:
+        """Show per-interface switching info: mode, VLANs, live operstate."""
+        filter_ifname: Optional[str] = args[0] if args else None
+        if len(args) > 1:
+            return f"error: unexpected argument '{args[1]}'"
+
+        cfg = self.store.get_running()
+        ifaces_cfg = cfg.get("interfaces", {})
+        vlan_map = self._build_vlan_id_map()  # {vlan_id: vlan_name}
+
+        operstate_map: dict[str, str] = {}
+        if IPRoute is not None:
+            try:
+                with IPRoute() as ipr:
+                    for lnk in ipr.get_links():
+                        name = lnk.get_attr("IFLA_IFNAME")
+                        if name:
+                            operstate_map[name] = (
+                                lnk.get_attr("IFLA_OPERSTATE") or "UNKNOWN"
+                            ).upper()
+            except Exception as exc:
+                _LOG.warning("interface state read failed (%s)", exc)
+
+        rows: list[dict] = []
+        for iface_key, iface_data in sorted(ifaces_cfg.items()):
+            if not isinstance(iface_data, dict):
+                continue
+            for unit_num, unit_data in sorted(
+                (iface_data.get("unit") or {}).items(),
+                key=lambda x: int(x[0]) if str(x[0]).isdigit() else 0,
+            ):
+                if not isinstance(unit_data, dict):
+                    continue
+                fes = unit_data.get("family_ethernet_switching")
+                if not isinstance(fes, dict):
+                    continue
+
+                display = f"{iface_key.replace('_', '-')}.{unit_num}"
+                physical = iface_key.replace("_", "-")
+
+                if filter_ifname is not None and filter_ifname not in (display, physical):
+                    continue
+
+                mode = fes.get("interface_mode") or "access"
+                vlan_sect = fes.get("vlan") or {}
+                members_raw = (
+                    vlan_sect.get("members") if isinstance(vlan_sect, dict) else None
+                )
+                members: list = (
+                    [members_raw]
+                    if isinstance(members_raw, (str, int))
+                    else list(members_raw or [])
+                )
+
+                vlan_names: list[str] = []
+                for m in members:
+                    if isinstance(m, int):
+                        vlan_names.append(vlan_map.get(m, f"vlan{m}"))
+                    elif isinstance(m, str):
+                        if m == "all":
+                            vlan_names.append("all")
+                        elif m.isdigit():
+                            vlan_names.append(vlan_map.get(int(m), f"vlan{m}"))
+                        else:
+                            vlan_names.append(m.replace("_", "-"))
+
+                operstate = operstate_map.get(physical, "UNKNOWN")
+                rows.append({
+                    "name": display,
+                    "state": "up" if operstate == "UP" else "down",
+                    "mode": mode,
+                    "vlans": ", ".join(vlan_names) if vlan_names else "-",
+                })
+
+        if not rows:
+            if filter_ifname:
+                return f"Interface '{filter_ifname}' not found or not a switching interface."
+            return "No switching interfaces configured."
+
+        header = f"{'Interface':<18}{'State':<7}{'Mode':<8}VLANs"
+        lines = [header]
+        for row in rows:
+            lines.append(
+                f"{row['name']:<18}{row['state']:<7}{row['mode']:<8}{row['vlans']}"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # show ethernet-switching statistics
+    # ------------------------------------------------------------------
+
+    def _read_link_stats(self) -> Optional[dict[str, dict]]:
+        """Return {ifname: stats_dict} from kernel IFLA_STATS64, or None if unavailable."""
+        if IPRoute is None:
+            return None
+        try:
+            with IPRoute() as ipr:
+                links = ipr.get_links()
+        except Exception as exc:
+            _LOG.warning("interface stats read failed (%s)", exc)
+            return None
+        result: dict[str, dict] = {}
+        for lnk in links:
+            name = lnk.get_attr("IFLA_IFNAME")
+            if name:
+                s = lnk.get_attr("IFLA_STATS64") or lnk.get_attr("IFLA_STATS") or {}
+                result[name] = s
+        return result
+
+    def _show_es_statistics(self, args: list[str]) -> str:
+        """Show per-interface switching packet counters from the kernel."""
+        filter_ifname: Optional[str] = args[0] if args else None
+        if len(args) > 1:
+            return f"error: unexpected argument '{args[1]}'"
+
+        cfg = self.store.get_running()
+        ifaces_cfg = cfg.get("interfaces", {})
+
+        # Collect physical interface names that have switching units.
+        switching_ifaces: list[str] = []
+        for iface_key, iface_data in sorted(ifaces_cfg.items()):
+            if not isinstance(iface_data, dict):
+                continue
+            for unit_data in (iface_data.get("unit") or {}).values():
+                if isinstance(unit_data, dict) and isinstance(
+                    unit_data.get("family_ethernet_switching"), dict
+                ):
+                    physical = iface_key.replace("_", "-")
+                    if physical not in switching_ifaces:
+                        switching_ifaces.append(physical)
+                    break
+
+        if not switching_ifaces:
+            return "No switching interfaces configured."
+
+        if filter_ifname is not None:
+            phys = filter_ifname.split(".")[0]
+            switching_ifaces = [n for n in switching_ifaces if n in (filter_ifname, phys)]
+            if not switching_ifaces:
+                return f"Interface '{filter_ifname}' not found or not a switching interface."
+
+        kernel_stats = self._read_link_stats()
+
+        header = (
+            f"{'Interface':<18}{'RX Packets':<14}{'TX Packets':<14}"
+            f"{'RX Errors':<12}TX Errors"
+        )
+        lines = [header]
+        for name in switching_ifaces:
+            if kernel_stats is None:
+                rx_pkts = tx_pkts = rx_err = tx_err = "N/A"
+            else:
+                s = kernel_stats.get(name, {})
+                rx_pkts = s.get("rx_packets", 0)
+                tx_pkts = s.get("tx_packets", 0)
+                rx_err  = s.get("rx_errors",  0)
+                tx_err  = s.get("tx_errors",  0)
+            lines.append(
+                f"{name:<18}{str(rx_pkts):<14}{str(tx_pkts):<14}"
+                f"{str(rx_err):<12}{tx_err}"
+            )
+        return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # show ethernet-switching flood
+    # ------------------------------------------------------------------
+
+    def _show_es_flood(self, args: list[str]) -> str:
+        """Show per-VLAN bridge flood group membership."""
+        if args:
+            return f"error: unexpected argument '{args[0]}'"
+
+        cfg = self.store.get_running()
+        vlans = cfg.get("vlans", {})
+        if not vlans:
+            return "No VLANs configured."
+
+        iface_map = self._vlan_iface_map(cfg)
+
+        header = f"{'VLAN':<21}Flood Interfaces"
+        lines = [header]
+        for vname, data in sorted(vlans.items()):
+            if not isinstance(data, dict):
+                continue
+            display = vname.replace("_", "-")
+            members = iface_map.get(vname, [])
+            lines.append(f"{display:<21}{', '.join(members) if members else '-'}")
+        return "\n".join(lines)
 
     def _show_configuration(self, args: list[str]) -> str:
         """Show running config in tree format, optionally filtered to a section."""

@@ -5,10 +5,20 @@
     },
     "ens34": {
       "unit": {
-        "101": {
-          "vlan_id": 101
+        "0": {
+          "family_ethernet_switching": {
+            "interface_mode": "access",
+            "vlan": {
+              "members": 101
+            }
+          }
         }
       }
+    }
+  },
+  "vlans": {
+    "vlan101": {
+      "vlan_id": 101
     }
   }
 }

@@ -95,6 +95,47 @@ int nos_xdp_fwd(struct xdp_md *ctx)
     __u16 proto = bpf_ntohs(eth->h_proto);
     void *l3    = (void *)(eth + 1);
 
+    /* ── access-port VLAN tag push ──
+     * If the ingress port is configured as an access port and the frame
+     * arrives untagged, push a 4-byte 802.1Q header before XDP_PASS so the
+     * bridge sees a tagged frame.  Trunk ports and already-tagged frames fall
+     * through to the existing VLAN/L3 processing below.
+     */
+    if (proto != ETH_P_8021Q) {
+        struct port_vlan_val *pv =
+            bpf_map_lookup_elem(&port_vlan_map, &ingress);
+        if (pv && pv->mode == 0) {
+            __u16 push_vid = pv->vlan_id;
+
+            if (bpf_xdp_adjust_head(ctx, -4) != 0)
+                return XDP_PASS;
+
+            /* All packet pointers are invalidated by adjust_head. */
+            data     = (void *)(long)ctx->data;
+            data_end = (void *)(long)ctx->data_end;
+
+            /* Need 14 (eth) + 4 (vlan) = 18 bytes from the new head. */
+            if ((char *)data + ETH_HLEN + sizeof(struct nos_vlanhdr) >
+                (char *)data_end)
+                return XDP_PASS;
+
+            struct ethhdr      *new_eth = data;
+            struct ethhdr      *old_eth =
+                (struct ethhdr *)((char *)data + 4);
+            struct nos_vlanhdr *vh =
+                (struct nos_vlanhdr *)(new_eth + 1);
+
+            /* Slide MAC addresses from old position (+4) to new head. */
+            __builtin_memcpy(new_eth->h_dest,   old_eth->h_dest,   ETH_ALEN);
+            __builtin_memcpy(new_eth->h_source, old_eth->h_source, ETH_ALEN);
+            new_eth->h_proto = bpf_htons(ETH_P_8021Q);
+            vh->tci          = bpf_htons(push_vid & 0x0FFFu);
+            vh->proto        = bpf_htons(proto);   /* original ethertype */
+
+            return XDP_PASS;
+        }
+    }
+
     /* ── 802.1Q VLAN (L2 forwarding path) ── */
     if (proto == ETH_P_8021Q) {
         struct nos_vlanhdr *vh = l3;

@@ -2647,3 +2647,404 @@ class TestShowIPv6NeighborsCompletion:
     def test_show_ipv6_neighbors_interface_space_offers_hint(self):
         kws = complete_oper("show ipv6 neighbors interface ")
         assert any("<interface-name>" in k for k in kws)
+
+
+# ============================================================================
+# show ethernet-switching interface
+# ============================================================================
+
+def _commit_switching(store, engine, commands: list[str]) -> OperationalMode:
+    cm = ConfigureMode(store, engine)
+    for cmd in commands:
+        cm.execute(cmd)
+    engine.commit()
+    return OperationalMode(store)
+
+
+class TestShowEthernetSwitchingInterface:
+
+    def test_no_switching_interfaces(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show ethernet-switching interface")
+        assert "No switching interfaces configured" in out
+
+    def test_header_present(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface")
+        assert "Interface" in out
+        assert "State" in out
+        assert "Mode" in out
+        assert "VLANs" in out
+
+    def test_access_mode_and_vlan(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface")
+        assert "ens33.0" in out
+        assert "access" in out
+        assert "vlan100" in out
+
+    def test_trunk_mode_shown(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode trunk",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [_MockLink("ens34", 3, 0, 1500, "UP")]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface")
+        assert "trunk" in out
+
+    def test_live_state_up(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [_MockLink("ens33", 2, 0, 1500, "UP")]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface")
+        assert "up" in out
+
+    def test_live_state_down(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [_MockLink("ens33", 2, 0, 1500, "DOWN")]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface")
+        assert "down" in out
+
+    def test_state_down_when_pyroute2_unavailable(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching interface")
+        assert "ens33.0" in out
+        assert "down" in out
+
+    def test_filter_by_unit_name(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        links = [
+            _MockLink("ens33", 2, 0, 1500, "UP"),
+            _MockLink("ens34", 3, 0, 1500, "UP"),
+        ]
+        with patch(_PATCH_IPROUTE, _make_iproute_mock(links, [])):
+            out = oper.execute("show ethernet-switching interface ens33.0")
+        assert "ens33.0" in out
+        assert "ens34.0" not in out
+
+    def test_filter_unknown_interface_returns_message(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching interface ens99.0")
+        assert "not found" in out.lower() or "not a switching" in out.lower()
+
+    def test_no_vlan_members_shows_dash(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching interface")
+        assert "ens33.0" in out
+        line = next(l for l in out.splitlines() if "ens33.0" in l)
+        assert line.endswith("-")
+
+    def test_vlan_member_shown_on_trunk(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan200 vlan-id 200",
+            "set interfaces ens34.0 family ethernet-switching interface-mode trunk",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan200",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching interface")
+        assert "trunk" in out
+        assert "vlan200" in out
+
+    def test_extra_args_returns_error(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        out = oper.execute("show ethernet-switching interface ens33.0 extra")
+        assert "error" in out.lower()
+
+    def test_no_args_shows_completion_hint(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show ethernet-switching")
+        assert "interface" in out
+        assert "statistics" in out
+        assert "flood" in out
+        assert "table" in out
+
+
+# ============================================================================
+# show ethernet-switching statistics
+# ============================================================================
+
+def _make_stats_link(name: str, index: int, operstate: str = "UP", **stats) -> _MockLink:
+    """Return a _MockLink that also carries IFLA_STATS64 data."""
+    lnk = _MockLink(name, index, 0, 1500, operstate)
+    lnk._a["IFLA_STATS64"] = stats
+    return lnk
+
+
+def _make_simple_iproute_mock(links: list) -> Mock:
+    """IPRoute mock that only needs get_links (for stats/interface-state reads)."""
+    instance = Mock()
+    instance.__enter__ = Mock(return_value=instance)
+    instance.__exit__ = Mock(return_value=False)
+    instance.get_links.return_value = links
+    instance.get_addr.return_value = []
+    return Mock(return_value=instance)
+
+
+class TestShowEthernetSwitchingStatistics:
+
+    def test_no_switching_interfaces(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show ethernet-switching statistics")
+        assert "No switching interfaces configured" in out
+
+    def test_header_present(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        lnk = _make_stats_link("ens33", 2, rx_packets=0, tx_packets=0, rx_errors=0, tx_errors=0)
+        with patch(_PATCH_IPROUTE, _make_simple_iproute_mock([lnk])):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "Interface" in out
+        assert "RX Packets" in out
+        assert "TX Packets" in out
+        assert "RX Errors" in out
+        assert "TX Errors" in out
+
+    def test_live_counters_displayed(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        lnk = _make_stats_link(
+            "ens33", 2,
+            rx_packets=12345, tx_packets=6789, rx_errors=1, tx_errors=2,
+        )
+        with patch(_PATCH_IPROUTE, _make_simple_iproute_mock([lnk])):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "ens33" in out
+        assert "12345" in out
+        assert "6789" in out
+        assert "1" in out
+        assert "2" in out
+
+    def test_pyroute2_unavailable_shows_na(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "ens33" in out
+        assert "N/A" in out
+
+    def test_interface_not_in_kernel_shows_zero(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        # Kernel returns no links → stats default to 0
+        with patch(_PATCH_IPROUTE, _make_simple_iproute_mock([])):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "ens33" in out
+        assert "0" in out
+
+    def test_filter_by_interface(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+        ])
+        lnks = [
+            _make_stats_link("ens33", 2, rx_packets=10, tx_packets=20, rx_errors=0, tx_errors=0),
+            _make_stats_link("ens34", 3, rx_packets=30, tx_packets=40, rx_errors=0, tx_errors=0),
+        ]
+        with patch(_PATCH_IPROUTE, _make_simple_iproute_mock(lnks)):
+            out = oper.execute("show ethernet-switching statistics ens33")
+        assert "ens33" in out
+        assert "ens34" not in out
+
+    def test_filter_unknown_returns_message(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching statistics ens99")
+        assert "not found" in out.lower() or "not a switching" in out.lower()
+
+    def test_multiple_interfaces_all_shown(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+        ])
+        lnks = [
+            _make_stats_link("ens33", 2, rx_packets=1, tx_packets=2, rx_errors=0, tx_errors=0),
+            _make_stats_link("ens34", 3, rx_packets=3, tx_packets=4, rx_errors=0, tx_errors=0),
+        ]
+        with patch(_PATCH_IPROUTE, _make_simple_iproute_mock(lnks)):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "ens33" in out
+        assert "ens34" in out
+
+    def test_extra_args_returns_error(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        out = oper.execute("show ethernet-switching statistics ens33 extra")
+        assert "error" in out.lower()
+
+    def test_kernel_error_shows_na(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+        ])
+        broken = Mock()
+        broken.__enter__ = Mock(return_value=broken)
+        broken.__exit__ = Mock(return_value=False)
+        broken.get_links.side_effect = OSError("eperm")
+        with patch(_PATCH_IPROUTE, Mock(return_value=broken)):
+            out = oper.execute("show ethernet-switching statistics")
+        assert "N/A" in out
+
+
+# ============================================================================
+# show ethernet-switching flood
+# ============================================================================
+
+class TestShowEthernetSwitchingFlood:
+
+    def test_no_vlans_configured(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show ethernet-switching flood")
+        assert "No VLANs configured" in out
+
+    def test_header_present(self, store, engine):
+        oper = _commit_switching(store, engine, ["set vlans vlan100 vlan-id 100"])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        assert "VLAN" in out
+        assert "Flood Interfaces" in out
+
+    def test_vlan_no_members_shows_dash(self, store, engine):
+        oper = _commit_switching(store, engine, ["set vlans vlan100 vlan-id 100"])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        line = next(l for l in out.splitlines() if "vlan100" in l)
+        assert line.endswith("-")
+
+    def test_access_interface_shown_as_flood_member(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        line = next(l for l in out.splitlines() if "vlan100" in l)
+        assert "ens33" in line
+
+    def test_multiple_members_in_flood_group(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        line = next(l for l in out.splitlines() if "vlan100" in l)
+        assert "ens33" in line
+        assert "ens34" in line
+
+    def test_interface_only_in_its_vlan(self, store, engine):
+        oper = _commit_switching(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set vlans vlan200 vlan-id 200",
+            "set interfaces ens33.0 family ethernet-switching interface-mode access",
+            "set interfaces ens33.0 family ethernet-switching vlan members vlan100",
+        ])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        vlan200_line = next(l for l in out.splitlines() if "vlan200" in l)
+        assert "ens33" not in vlan200_line
+        assert vlan200_line.endswith("-")
+
+    def test_vlan_names_normalised(self, store, engine):
+        oper = _commit_switching(store, engine, ["set vlans vlan_100 vlan-id 100"])
+        with patch(_PATCH_IPROUTE, None):
+            out = oper.execute("show ethernet-switching flood")
+        assert "vlan-100" in out
+
+    def test_kernel_bridge_ports_included(self, store, engine):
+        """Bridge VLAN info from kernel populates flood group when bridge exists."""
+        oper = _commit_switching(store, engine, ["set vlans vlan100 vlan-id 100"])
+
+        class _MockAfSpec:
+            def get_attrs(self, key):
+                return [{"vid": 100}] if key == "IFLA_BRIDGE_VLAN_INFO" else []
+
+        class _MockVlanEntry:
+            def __init__(self, idx):
+                self._idx = idx
+            def __getitem__(self, key):
+                if key == "index":
+                    return self._idx
+                raise KeyError(key)
+            def get_attr(self, key):
+                return _MockAfSpec() if key == "IFLA_AF_SPEC" else None
+
+        br_idx = 10
+        port_idx = 2
+        instance = Mock()
+        instance.__enter__ = Mock(return_value=instance)
+        instance.__exit__ = Mock(return_value=False)
+        instance.link_lookup.side_effect = (
+            lambda ifname=None: [br_idx] if ifname == "nos-br" else []
+        )
+        lnks = [
+            _MockLink("nos-br", br_idx, 0, 1500, "UP"),
+            _MockLink("ens33",  port_idx, 0, 1500, "UP"),
+        ]
+        instance.get_links.return_value = lnks
+        instance.get_vlans.return_value = [_MockVlanEntry(port_idx)]
+        instance.get_addr.return_value = []
+
+        with patch(_PATCH_IPROUTE, Mock(return_value=instance)):
+            out = oper.execute("show ethernet-switching flood")
+        line = next(l for l in out.splitlines() if "vlan100" in l)
+        assert "ens33" in line
+
+    def test_extra_args_returns_error(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show ethernet-switching flood extra")
+        assert "error" in out.lower()

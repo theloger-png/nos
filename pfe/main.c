@@ -317,6 +317,40 @@ static void handle_vlan_del(int fd, cJSON *msg)
     reply_ok(fd);
 }
 
+static void handle_port_vlan_set(int fd, cJSON *msg)
+{
+    cJSON *jifindex = cJSON_GetObjectItemCaseSensitive(msg, "ifindex");
+    cJSON *jvlan    = cJSON_GetObjectItemCaseSensitive(msg, "vlan_id");
+    cJSON *jmode    = cJSON_GetObjectItemCaseSensitive(msg, "mode");
+
+    if (!cJSON_IsNumber(jifindex) || !cJSON_IsNumber(jvlan) ||
+        !cJSON_IsNumber(jmode)) {
+        reply_err(fd, "port_vlan_set: required fields: ifindex, vlan_id, mode (ints)");
+        return;
+    }
+
+    uint16_t vlan_id = (uint16_t)jvlan->valuedouble;
+    if (vlan_id < 1 || vlan_id > 4094) {
+        reply_err(fd, "port_vlan_set: vlan_id out of range [1, 4094]");
+        return;
+    }
+
+    uint8_t mode = (uint8_t)jmode->valuedouble;
+    if (mode > 1) {
+        reply_err(fd, "port_vlan_set: mode must be 0 (access) or 1 (trunk)");
+        return;
+    }
+
+    uint32_t ifindex = (uint32_t)jifindex->valuedouble;
+    if (xdp_loader_port_vlan_set(ifindex, vlan_id, mode) < 0) {
+        reply_err(fd, "port_vlan_set: failed to update port_vlan_map");
+        return;
+    }
+
+    log_info("port_vlan_set ifindex=%u vlan_id=%u mode=%u", ifindex, vlan_id, mode);
+    reply_ok(fd);
+}
+
 static void handle_xdp_attach(int fd, cJSON *msg)
 {
     cJSON *jifindex = cJSON_GetObjectItemCaseSensitive(msg, "ifindex");
@@ -410,6 +444,7 @@ static void dispatch(int fd, const char *raw, size_t len)
     else if (strcmp(t, "neigh_del")  == 0) handle_neigh_del(fd, msg);
     else if (strcmp(t, "vlan_set")   == 0) handle_vlan_set(fd, msg);
     else if (strcmp(t, "vlan_del")   == 0) handle_vlan_del(fd, msg);
+    else if (strcmp(t, "port_vlan_set") == 0) handle_port_vlan_set(fd, msg);
     else if (strcmp(t, "xdp_attach") == 0) handle_xdp_attach(fd, msg);
     else if (strcmp(t, "xdp_detach") == 0) handle_xdp_detach(fd, msg);
     else if (strcmp(t, "stats_get")  == 0) handle_stats_get(fd, msg);

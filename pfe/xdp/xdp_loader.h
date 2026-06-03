@@ -2,6 +2,7 @@
 #ifndef NOS_XDP_LOADER_H
 #define NOS_XDP_LOADER_H
 
+#include <stdint.h>
 #include <linux/if_link.h>   /* XDP_FLAGS_SKB_MODE, XDP_FLAGS_DRV_MODE */
 
 /*
@@ -27,5 +28,12 @@ int  xdp_loader_attach_all(unsigned int flags);
 
 /* Detach from every interface that has this program attached. */
 int  xdp_loader_detach_all(void);
+
+/* Insert or update an entry in port_vlan_map.
+ * mode: 0 = access (XDP pushes a tag), 1 = trunk (pass through). */
+int  xdp_loader_port_vlan_set(uint32_t ifindex, uint16_t vlan_id, uint8_t mode);
+
+/* Remove an entry from port_vlan_map (ENOENT is silently ignored). */
+int  xdp_loader_port_vlan_del(uint32_t ifindex);
 
 #endif /* NOS_XDP_LOADER_H */
