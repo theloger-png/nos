@@ -147,7 +147,7 @@ class ConfigApplier:
                 sw = unit_config.get("family_ethernet_switching")
                 if sw:
                     log.info("Applying switchport on %s", name)
-                    self._kernel.apply_bridge("nos-br", {})
+                    self._kernel.apply_bridge("nos-br", {"ports": [name]})
                     vlans_cfg = full_config.get("vlans") or {}
                     members = (sw.get("vlan") or {}).get("members") or []
                     if not isinstance(members, list):

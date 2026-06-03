@@ -13,18 +13,6 @@
           }
         }
       }
-    },
-    "ens34": {
-      "unit": {
-        "0": {
-          "family_ethernet_switching": {
-            "interface_mode": "access",
-            "vlan": {
-              "members": 101
-            }
-          }
-        }
-      }
     }
   },
   "vlans": {
