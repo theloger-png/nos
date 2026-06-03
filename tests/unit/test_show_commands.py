@@ -555,13 +555,13 @@ class TestShowInterfacesCompletion:
         assert "description" in kws
         assert "terse" not in kws
 
-    def test_show_interfaces_terse_space_no_completions(self):
+    def test_show_interfaces_terse_space_offers_pipe(self):
         kws = complete_oper("show interfaces terse ")
-        assert kws == []
+        assert "|" in kws
 
-    def test_show_interfaces_description_space_no_completions(self):
+    def test_show_interfaces_description_space_offers_pipe(self):
         kws = complete_oper("show interfaces description ")
-        assert kws == []
+        assert "|" in kws
 
     def test_show_space_still_offers_interfaces(self):
         kws = complete_oper("show ")
@@ -713,6 +713,42 @@ class TestShowConfigurationHandler:
         out = oper.execute("show configuration | display set")
         lines = out.splitlines()
         assert lines == sorted(lines)
+
+    # ------------------------------------------------------------------
+    # pipe chaining
+    # ------------------------------------------------------------------
+
+    def test_pipe_chain_match_then_count(self, oper, populated_store):
+        # "| match host-name | count" should count only the matching lines
+        out = oper.execute("show configuration | match host-name | count")
+        n = int(out.strip())
+        assert n >= 1
+
+    def test_pipe_chain_match_then_match(self, oper, populated_store):
+        # Both filters must hold on every surviving line
+        out = oper.execute("show configuration | match set | match interfaces")
+        lines = out.splitlines()
+        assert all("set" in ln and "interfaces" in ln for ln in lines)
+
+    def test_pipe_chain_count_produces_single_line(self, oper, populated_store):
+        out = oper.execute("show configuration | match host-name | count")
+        assert "\n" not in out.strip()
+        assert out.strip().isdigit()
+
+    def test_pipe_chain_display_set_then_match(self, oper, populated_store):
+        # Convert to set-commands, then keep only interface lines
+        out = oper.execute("show configuration | display set | match interfaces")
+        lines = out.splitlines()
+        assert lines
+        assert all("interfaces" in ln for ln in lines)
+        assert all(ln.startswith("set ") for ln in lines)
+
+    def test_pipe_chain_except_then_count(self, oper, populated_store):
+        total = int(oper.execute("show configuration | count").strip())
+        without_system = int(
+            oper.execute("show configuration | except system | count").strip()
+        )
+        assert without_system < total
 
 
 # ============================================================================
@@ -995,6 +1031,88 @@ class TestShowConfigurationPipeCompletion:
     def test_set_offered_after_section_pipe_display(self):
         kws = complete_oper("show configuration interfaces | display ")
         assert "set" in kws
+
+
+# ============================================================================
+# Pipe chaining completion (operational + configure)
+# ============================================================================
+
+class TestPipeChainCompletion:
+    """Tab completion for chained pipes: show ... | verb1 args | verb2"""
+
+    # -- operational mode -----------------------------------------------------
+
+    def test_chain_second_pipe_offers_verbs(self):
+        # "show interfaces | match ge- | " → pipe verbs
+        kws = complete_oper("show interfaces | match ge- | ")
+        assert "match" in kws
+        assert "count" in kws
+        assert "except" in kws
+        assert "find" in kws
+
+    def test_chain_second_pipe_partial_verb(self):
+        kws = complete_oper("show interfaces | match ge- | co")
+        assert "count" in kws
+        assert "match" not in kws
+
+    def test_chain_after_configuration_match(self):
+        kws = complete_oper("show configuration | match interfaces | ")
+        assert "count" in kws
+        assert "match" in kws
+
+    def test_chain_display_set_then_pipe(self):
+        kws = complete_oper("show configuration | display set | ")
+        assert "match" in kws
+        assert "count" in kws
+
+    def test_chain_display_set_then_partial(self):
+        kws = complete_oper("show configuration | display set | ma")
+        assert "match" in kws
+        assert "count" not in kws
+
+    def test_chain_no_display_after_count(self):
+        # After "count" there's no sub-argument — only a new "|" chain could follow
+        kws = complete_oper("show configuration | count | ")
+        assert "match" in kws
+        assert "count" in kws
+
+    def test_pipe_offered_for_vlans(self):
+        kws = complete_oper("show vlans | ")
+        assert "match" in kws
+        assert "count" in kws
+
+    def test_pipe_offered_for_arp(self):
+        kws = complete_oper("show arp | ")
+        assert "match" in kws
+
+    def test_pipe_offered_for_interfaces(self):
+        kws = complete_oper("show interfaces | ")
+        assert "match" in kws
+        assert "count" in kws
+
+    def test_pipe_offered_after_interfaces_terse(self):
+        kws = complete_oper("show interfaces terse | ")
+        assert "match" in kws
+        assert "count" in kws
+
+    # -- configure mode -------------------------------------------------------
+
+    def test_conf_chain_second_pipe_offers_verbs(self):
+        kws = complete_conf("show interfaces | match eth | ")
+        assert "match" in kws
+        assert "count" in kws
+        assert "compare" in kws
+
+    def test_conf_chain_second_pipe_partial(self):
+        kws = complete_conf("show interfaces | match eth | co")
+        assert "count" in kws
+        assert "compare" in kws
+        assert "match" not in kws
+
+    def test_conf_chain_display_set_then_pipe(self):
+        kws = complete_conf("show | display set | ")
+        assert "match" in kws
+        assert "count" in kws
 
 
 # ============================================================================

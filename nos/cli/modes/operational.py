@@ -1155,7 +1155,11 @@ class OperationalMode:
 def _apply_pipe(
     output: str, pipe: Optional[str], config: Optional[dict] = None
 ) -> str:
-    """Apply a JunOS-style pipe filter to *output*.
+    """Apply one or more JunOS-style pipe filters to *output* in sequence.
+
+    *pipe* may contain multiple filters separated by `` | `` (e.g.
+    ``"match ge- | count"``).  Each filter is applied to the result of the
+    previous one, left-to-right.
 
     *config* is an optional pre-scoped config dict used by ``display set`` to
     regenerate set-commands format from the tree output.
@@ -1163,35 +1167,39 @@ def _apply_pipe(
     if not pipe:
         return output
 
-    parts = pipe.strip().split(None, 1)
-    verb = parts[0].lower()
-    pattern = parts[1] if len(parts) > 1 else ""
+    for segment in pipe.split(" | "):
+        segment = segment.strip()
+        if not segment:
+            continue
 
-    lines = output.splitlines()
+        parts = segment.split(None, 1)
+        verb = parts[0].lower()
+        pattern = parts[1] if len(parts) > 1 else ""
 
-    match verb:
-        case "match":
-            lines = [ln for ln in lines if pattern in ln]
-        case "except":
-            lines = [ln for ln in lines if pattern not in ln]
-        case "find":
-            found = False
-            result = []
-            for ln in lines:
-                if not found and pattern in ln:
-                    found = True
-                if found:
-                    result.append(ln)
-            lines = result
-        case "count":
-            return str(len(lines))
-        case "no-more":
-            pass  # no paging in non-interactive use
-        case "display":
-            if pattern.strip().lower() == "set" and config is not None:
-                cmds = to_set_commands(config)
-                return "\n".join(cmds)
-        case _:
-            pass
+        lines = output.splitlines()
 
-    return "\n".join(lines)
+        match verb:
+            case "match":
+                output = "\n".join(ln for ln in lines if pattern in ln)
+            case "except":
+                output = "\n".join(ln for ln in lines if pattern not in ln)
+            case "find":
+                found = False
+                result = []
+                for ln in lines:
+                    if not found and pattern in ln:
+                        found = True
+                    if found:
+                        result.append(ln)
+                output = "\n".join(result)
+            case "count":
+                output = str(len(lines))
+            case "no-more":
+                pass  # no paging in non-interactive use
+            case "display":
+                if pattern.strip().lower() == "set" and config is not None:
+                    output = "\n".join(to_set_commands(config))
+            case _:
+                pass
+
+    return output

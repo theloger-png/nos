@@ -726,9 +726,50 @@ class NOSCompleter(Completer):
         elif resolved == "traceroute":
             yield from self._complete_traceroute_options(rest, completing_new)
 
+    def _complete_pipe_verbs(
+        self,
+        after_pipe: list[str],
+        completing_new: bool,
+        pipe_verbs: dict[str, str],
+    ) -> Generator[Completion, None, None]:
+        """Complete pipe verb or 'display set' for the segment after the last '|'."""
+        pipe_prefix = "" if completing_new else (after_pipe[-1] if after_pipe else "")
+
+        if not after_pipe or (len(after_pipe) == 1 and not completing_new):
+            for verb, desc in pipe_verbs.items():
+                if verb.startswith(pipe_prefix):
+                    yield Completion(verb, -len(pipe_prefix), display_meta=desc)
+        elif after_pipe:
+            resolved_verb, _ = resolve_prefix(
+                after_pipe[0].lower(), list(pipe_verbs.keys())
+            )
+            if resolved_verb == "display":
+                sub_prefix = (
+                    "" if completing_new else (after_pipe[1] if len(after_pipe) > 1 else "")
+                )
+                if not after_pipe[1:] or (len(after_pipe) == 2 and not completing_new):
+                    if "set".startswith(sub_prefix):
+                        yield Completion("set", -len(sub_prefix),
+                                         display_meta="Set commands format")
+            # Offer "|" for chaining when the current segment is complete:
+            # no-arg verbs are done after the verb itself; one-arg verbs need verb + arg.
+            if completing_new:
+                _NO_ARG_VERBS = {"count", "no-more", "compare"}
+                if resolved_verb in _NO_ARG_VERBS or len(after_pipe) >= 2:
+                    yield Completion("|", display_meta="Chain another filter")
+
     def _complete_show_operational(
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
+        # Pipe handling: if "|" appears anywhere, complete after the last "|".
+        # This covers both single-pipe and chained-pipe for all show sub-commands.
+        if "|" in rest:
+            last_pipe_idx = max(i for i, t in enumerate(rest) if t == "|")
+            yield from self._complete_pipe_verbs(
+                rest[last_pipe_idx + 1:], completing_new, _OPER_PIPE_VERBS
+            )
+            return
+
         prefix = "" if completing_new else (rest[-1] if rest else "")
 
         if not rest or (len(rest) == 1 and not completing_new):
@@ -756,6 +797,8 @@ class NOSCompleter(Completer):
                     yield Completion("<interface-name>", display_meta="Interface name")
                 elif last_kw == "hostname":
                     yield Completion("<ip-address>", display_meta="IP address")
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
             return
 
         # "show ipv6 neighbors [interface <if>]"
@@ -768,8 +811,7 @@ class NOSCompleter(Completer):
                         "neighbors", -len(ipv6_prefix),
                         display_meta="Show IPv6 neighbor table",
                     )
-                return
-            if ipv6_rest[0].lower() == "neighbors":
+            elif ipv6_rest[0].lower() == "neighbors":
                 nbr_rest = ipv6_rest[1:]
                 nbr_prefix = "" if completing_new else (nbr_rest[-1] if nbr_rest else "")
                 if not nbr_rest or (len(nbr_rest) == 1 and not completing_new):
@@ -780,6 +822,8 @@ class NOSCompleter(Completer):
                         )
                 elif completing_new and nbr_rest[-1].lower() == "interface":
                     yield Completion("<interface-name>", display_meta="Interface name")
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
             return
 
         # "show interfaces [terse|description]"
@@ -790,6 +834,8 @@ class NOSCompleter(Completer):
                 for kw, meta in _IFACE_SUB_CMDS.items():
                     if kw.startswith(sub_prefix):
                         yield Completion(kw, -len(sub_prefix), display_meta=meta)
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
             return
 
         # "show ethernet-switching table [interface <if>|vlan <v>|summary]"
@@ -801,8 +847,7 @@ class NOSCompleter(Completer):
                     yield Completion(
                         "table", -len(eth_prefix), display_meta="Show MAC/FDB table"
                     )
-                return
-            if eth_rest[0].lower() == "table":
+            elif eth_rest[0].lower() == "table":
                 tbl_rest = eth_rest[1:]
                 tbl_prefix = "" if completing_new else (tbl_rest[-1] if tbl_rest else "")
                 if not tbl_rest or (len(tbl_rest) == 1 and not completing_new):
@@ -817,38 +862,21 @@ class NOSCompleter(Completer):
                     elif completing_new and last_kw.lower() in ("interface", "vlan"):
                         hint = "<interface-name>" if last_kw.lower() == "interface" else "<vlan-name-or-id>"
                         yield Completion(hint, display_meta=_ETH_SWITCH_TABLE_SUBCMDS[last_kw.lower()])
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
             return
 
         # "show configuration [<section-path>] [| <pipe-verb> ...]"
         if resolved_sub == "configuration":
             config_rest = rest[1:]
-
-            if "|" in config_rest:
-                pipe_idx = config_rest.index("|")
-                after_pipe = config_rest[pipe_idx + 1:]
-                pipe_prefix = "" if completing_new else (after_pipe[-1] if after_pipe else "")
-
-                if not after_pipe or (len(after_pipe) == 1 and not completing_new):
-                    for verb, desc in _OPER_PIPE_VERBS.items():
-                        if verb.startswith(pipe_prefix):
-                            yield Completion(verb, -len(pipe_prefix), display_meta=desc)
-                elif after_pipe:
-                    resolved_verb, _ = resolve_prefix(
-                        after_pipe[0].lower(), list(_OPER_PIPE_VERBS.keys())
-                    )
-                    if resolved_verb == "display":
-                        sub_prefix = (
-                            "" if completing_new else (after_pipe[1] if len(after_pipe) > 1 else "")
-                        )
-                        if not after_pipe[1:] or (len(after_pipe) == 2 and not completing_new):
-                            if "set".startswith(sub_prefix):
-                                yield Completion("set", -len(sub_prefix),
-                                                 display_meta="Set commands format")
-                return
-
             yield from complete_config_tokens(config_rest, completing_new, [], self.store)
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
+            return
+
+        # All other show sub-commands (route, bgp, isis, vlans, system, forwarding)
+        if completing_new:
+            yield Completion("|", display_meta="Filter output")
 
     def _complete_ping_options(
         self, rest: list[str], completing_new: bool
@@ -912,37 +940,17 @@ class NOSCompleter(Completer):
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
         if "|" in rest:
-            pipe_idx = rest.index("|")
-            after = rest[pipe_idx + 1:]
-            prefix = "" if completing_new else (after[-1] if after else "")
-
-            if not after or (len(after) == 1 and not completing_new):
-                for verb, desc in _CONFIGURE_PIPE_VERBS.items():
-                    if verb.startswith(prefix):
-                        yield Completion(verb, -len(prefix), display_meta=desc)
-            elif after:
-                resolved_verb, _ = resolve_prefix(
-                    after[0].lower(), list(_CONFIGURE_PIPE_VERBS.keys())
-                )
-                if resolved_verb == "display":
-                    sub_prefix = (
-                        "" if completing_new else (after[1] if len(after) > 1 else "")
-                    )
-                    if not after[1:] or (len(after) == 2 and not completing_new):
-                        if "set".startswith(sub_prefix):
-                            yield Completion("set", -len(sub_prefix),
-                                             display_meta="Set commands format")
+            last_pipe_idx = max(i for i, t in enumerate(rest) if t == "|")
+            yield from self._complete_pipe_verbs(
+                rest[last_pipe_idx + 1:], completing_new, _CONFIGURE_PIPE_VERBS
+            )
             return
 
         # Config section path completions, relative to the current edit_path.
-        # Reuses the same tree-walk as set/delete/edit so the user sees the
-        # same hierarchy (e.g. "show interfaces", "show protocols bgp").
         yield from complete_config_tokens(
             rest, completing_new, self.edit_path, self.store
         )
 
-        # Offer "|" whenever the cursor is at a fresh token boundary so the
-        # user can pipe the output (e.g. "show interfaces | match eth").
         if completing_new:
             yield Completion("|", display_meta="Filter output")
 
