@@ -7,10 +7,13 @@ feel to JunOS.  Entry point: nos.cli.shell:main.
 from __future__ import annotations
 
 import getpass
+import logging
 import socket
 import sys
 from pathlib import Path
 from typing import Optional
+
+_log = logging.getLogger(__name__)
 
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import CompleteEvent
@@ -80,6 +83,12 @@ class NOSShell:
         self.mode = CLIMode.OPERATIONAL
         self.oper_handler = OperationalMode(self.store, pfe=pfe)
         self.conf_handler = ConfigureMode(self.store, self.commit_engine)
+
+        _log.info("Applying running configuration on startup...")
+        try:
+            applier.apply({}, self.store.get_running())
+        except Exception as exc:
+            _log.error("Startup config apply failed: %s", exc)
 
     # ------------------------------------------------------------------
     # Prompt construction

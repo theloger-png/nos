@@ -8,6 +8,7 @@ from nos.drivers.kernel.bridge import (
     _BRIDGE_VLAN_INFO_PVID,
     _BRIDGE_VLAN_INFO_UNTAGGED,
 )
+from pyroute2.netlink.rtnl.ifinfmsg import BRIDGE_FLAGS_SELF
 
 
 # ---------------------------------------------------------------------------
@@ -226,3 +227,31 @@ def test_get_bridge_ports_returns_empty_when_no_members():
     ports = driver.get_bridge_ports("nos-br")
 
     assert ports == []
+
+
+# ---------------------------------------------------------------------------
+# vlan_add_self
+# ---------------------------------------------------------------------------
+
+def test_vlan_add_self_uses_bridge_flags_self():
+    ip = MagicMock()
+    ip.link_lookup.return_value = [10]
+
+    driver = _make_driver(ip)
+    driver.vlan_add_self("nos-br", 100)
+
+    ip.vlan_filter.assert_called_once_with(
+        "add",
+        index=10,
+        vlan_info={"vid": 100, "flags": 0},
+        IFLA_AF_SPEC={"attrs": [("IFLA_BRIDGE_FLAGS", BRIDGE_FLAGS_SELF)]},
+    )
+
+
+def test_vlan_add_self_raises_if_bridge_missing():
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    with pytest.raises(ValueError, match="does not exist"):
+        driver.vlan_add_self("nos-br", 100)
