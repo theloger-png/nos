@@ -30,7 +30,8 @@ apt-get install -y --no-install-recommends \
     "linux-headers-$(uname -r)" \
     clang llvm libbpf-dev linux-tools-common \
     libmnl-dev libcjson-dev libsystemd-dev \
-    python3.12 python3.12-venv python3-pip
+    python3.12 python3.12-venv python3-pip \
+    traceroute
 ok "System packages installed."
 
 # ── 2. system user ─────────────────────────────────────────────────────────────
