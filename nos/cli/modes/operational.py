@@ -717,21 +717,102 @@ class OperationalMode:
             "Use 'vtysh -c \"show isis adjacency\"' for current state.\n"
         )
 
+    def _vlan_iface_map(self, cfg: dict) -> dict[str, list[str]]:
+        """Build {vlan_name: sorted([iface.unit, ...])} from config + live bridge data."""
+        vlans = cfg.get("vlans", {})
+        ifaces_cfg = cfg.get("interfaces", {})
+
+        id_to_vname: dict[int, str] = {}
+        for vname, vdata in vlans.items():
+            if not isinstance(vdata, dict):
+                continue
+            vid = vdata.get("vlan_id") or vdata.get("vlan-id")
+            if vid is not None:
+                id_to_vname[int(vid)] = vname
+
+        attached: dict[str, set[str]] = {n: set() for n in vlans if isinstance(vlans[n], dict)}
+
+        for iface_key, iface_data in ifaces_cfg.items():
+            if not isinstance(iface_data, dict):
+                continue
+            for unit_num, unit_data in (iface_data.get("unit") or {}).items():
+                if not isinstance(unit_data, dict):
+                    continue
+                fes = unit_data.get("family_ethernet_switching")
+                if not isinstance(fes, dict):
+                    continue
+                vlan_sect = fes.get("vlan") or {}
+                members_raw = vlan_sect.get("members") if isinstance(vlan_sect, dict) else None
+                if members_raw is None:
+                    continue
+                # Config stores members as scalar or list depending on how it was set
+                members = [members_raw] if isinstance(members_raw, (str, int)) else list(members_raw)
+                if not members:
+                    continue
+                display = f"{iface_key.replace('_', '-')}.{unit_num}"
+                for m in members:
+                    matched: Optional[str] = None
+                    if isinstance(m, int):
+                        matched = id_to_vname.get(m)
+                    elif isinstance(m, str):
+                        if m in vlans:
+                            matched = m
+                        else:
+                            norm = m.replace("-", "_")
+                            if norm in vlans:
+                                matched = norm
+                            elif m.isdigit():
+                                matched = id_to_vname.get(int(m))
+                    if matched and matched in attached:
+                        attached[matched].add(display)
+
+        if IPRoute is not None:
+            try:
+                with IPRoute() as ipr:
+                    if ipr.link_lookup(ifname="nos-br"):
+                        idx_to_name: dict[int, str] = {
+                            lnk["index"]: lnk.get_attr("IFLA_IFNAME")
+                            for lnk in ipr.get_links()
+                            if lnk.get_attr("IFLA_IFNAME")
+                        }
+                        for entry in ipr.get_vlans():
+                            port_name = idx_to_name.get(entry["index"], "")
+                            if not port_name or port_name == "nos-br":
+                                continue
+                            af_spec = entry.get_attr("IFLA_AF_SPEC")
+                            if af_spec is None:
+                                continue
+                            for bv in (af_spec.get_attrs("IFLA_BRIDGE_VLAN_INFO") or []):
+                                if not isinstance(bv, dict):
+                                    continue
+                                vid = bv.get("vid")
+                                if vid is None:
+                                    continue
+                                vname = id_to_vname.get(vid)
+                                if vname and vname in attached:
+                                    attached[vname].add(f"{port_name}.0")
+            except Exception as exc:
+                _LOG.debug("bridge VLAN read failed (%s)", exc)
+
+        return {vname: sorted(ifaces) for vname, ifaces in attached.items()}
+
     def _show_vlans(self, args: list[str]) -> str:
         cfg = self.store.get_running()
         vlans = cfg.get("vlans", {})
         if not vlans:
             return "No VLANs configured."
 
-        lines = ["Name             VID    L3-interface"]
-        lines.append("-" * 45)
+        iface_map = self._vlan_iface_map(cfg)
+        header = f"{'Name':<21}{'Tag':<7}Interfaces"
+        lines = [header]
         for name, data in sorted(vlans.items()):
             if not isinstance(data, dict):
                 continue
             display_name = name.replace("_", "-")
             vid = data.get("vlan_id", data.get("vlan-id", "—"))
-            l3 = data.get("l3_interface", data.get("l3-interface", "—"))
-            lines.append(f"{display_name:<17}{str(vid):<7}{l3}")
+            ifaces = iface_map.get(name, [])
+            iface_str = ", ".join(ifaces) if ifaces else "-"
+            lines.append(f"{display_name:<21}{str(vid):<7}{iface_str}")
         return "\n".join(lines)
 
     def _show_system(self, args: list[str]) -> str:

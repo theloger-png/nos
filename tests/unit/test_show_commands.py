@@ -1277,6 +1277,138 @@ class TestShowForwarding:
 
 
 # ============================================================================
+# show vlans — operational mode
+# ============================================================================
+
+class TestShowVlans:
+    def _commit(self, store, engine, commands: list[str]) -> OperationalMode:
+        cm = ConfigureMode(store, engine)
+        for cmd in commands:
+            cm.execute(cmd)
+        engine.commit()
+        return OperationalMode(store)
+
+    def test_no_vlans_configured(self, store):
+        oper = OperationalMode(store)
+        out = oper.execute("show vlans")
+        assert "No VLANs configured" in out
+
+    def test_header_format(self, store, engine):
+        oper = self._commit(store, engine, ["set vlans vlan100 vlan-id 100"])
+        out = oper.execute("show vlans")
+        assert "Name" in out
+        assert "Tag" in out
+        assert "Interfaces" in out
+
+    def test_vlan_no_attached_interfaces_shows_dash(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set vlans vlan200 vlan-id 200",
+        ])
+        out = oper.execute("show vlans")
+        lines = out.splitlines()
+        data_lines = [l for l in lines if "vlan" in l.lower() and "Name" not in l]
+        for line in data_lines:
+            assert line.endswith("-")
+
+    def test_interface_matched_by_vlan_name(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        out = oper.execute("show vlans")
+        assert "ens34.0" in out
+
+    def test_interface_matched_by_vlan_id_integer(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members 100",
+        ])
+        out = oper.execute("show vlans")
+        assert "ens34.0" in out
+
+    def test_multiple_interfaces_same_vlan(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+            "set interfaces ens35.0 family ethernet-switching interface-mode access",
+            "set interfaces ens35.0 family ethernet-switching vlan members vlan100",
+        ])
+        out = oper.execute("show vlans")
+        assert "ens34.0" in out
+        assert "ens35.0" in out
+
+    def test_interface_on_vlan_not_listed_for_other_vlan(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set vlans vlan200 vlan-id 200",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        out = oper.execute("show vlans")
+        lines = out.splitlines()
+        vlan200_line = next((l for l in lines if "vlan200" in l), "")
+        assert "ens34.0" not in vlan200_line
+        assert vlan200_line.endswith("-")
+
+    def test_underscore_vlan_name_normalized_in_output(self, store, engine):
+        oper = self._commit(store, engine, ["set vlans vlan_100 vlan-id 100"])
+        out = oper.execute("show vlans")
+        assert "vlan-100" in out
+
+    def test_output_row_alignment(self, store, engine):
+        oper = self._commit(store, engine, [
+            "set vlans vlan100 vlan-id 100",
+            "set interfaces ens34.0 family ethernet-switching interface-mode access",
+            "set interfaces ens34.0 family ethernet-switching vlan members vlan100",
+        ])
+        out = oper.execute("show vlans")
+        lines = out.splitlines()
+        data_line = next(l for l in lines if "vlan100" in l)
+        assert data_line == f"{'vlan100':<21}{'100':<7}ens34.0"
+
+    def test_pyroute2_bridge_port_mapped_to_unit_zero(self, store, engine):
+        """Bare physical names from get_vlans() must appear as ifname.0, not ifname."""
+        oper = self._commit(store, engine, ["set vlans vlan100 vlan-id 100"])
+
+        # Build a minimal get_vlans() entry: port ens34 is tagged with vid 100
+        class _MockAfSpec:
+            def get_attrs(self, key):
+                if key == "IFLA_BRIDGE_VLAN_INFO":
+                    return [{"vid": 100}]
+                return []
+
+        class _MockVlanEntry:
+            def __init__(self, idx):
+                self._idx = idx
+            def __getitem__(self, key):
+                if key == "index":
+                    return self._idx
+                raise KeyError(key)
+            def get_attr(self, key):
+                if key == "IFLA_AF_SPEC":
+                    return _MockAfSpec()
+                return None
+
+        instance = Mock()
+        instance.__enter__ = Mock(return_value=instance)
+        instance.__exit__ = Mock(return_value=False)
+        instance.link_lookup.side_effect = lambda ifname=None: [10] if ifname == "nos-br" else []
+        instance.get_links.return_value = [_MockLink("ens34", 3, 0, 1500, "UP")]
+        instance.get_vlans.return_value = [_MockVlanEntry(3)]
+        mock_ip = Mock(return_value=instance)
+
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show vlans")
+
+        assert "ens34.0" in out
+        assert "ens34 " not in out  # bare name must not appear
+
+
+# ============================================================================
 # show ethernet-switching table — helpers
 # ============================================================================
 
