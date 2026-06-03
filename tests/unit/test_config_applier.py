@@ -192,11 +192,12 @@ class TestVlans:
         applier.apply({"vlans": {"vlan101": _VLAN_SVI_CFG}}, {})
         kernel.delete_interface.assert_called_once_with("irb.101")
 
-    def test_unchanged_vlan_not_reapplied(self):
+    def test_unchanged_vlan_with_l3_interface_still_applies_svi(self):
+        """apply_svi is always called so IRB address changes are never missed."""
         applier, kernel, _, _ = _make_applier()
         config = {"vlans": {"vlan101": _VLAN_SVI_CFG}}
         applier.apply(config, config)
-        kernel.apply_svi.assert_not_called()
+        kernel.apply_svi.assert_called_once_with("irb.101", {"vlan_id": 101})
 
     def test_changed_vlan_with_l3_interface_calls_apply_svi(self):
         applier, kernel, _, _ = _make_applier()
@@ -204,6 +205,28 @@ class TestVlans:
         new = {"vlans": {"vlan101": {"vlan_id": 101, "l3_interface": "irb.101", "description": "mgmt"}}}
         applier.apply(old, new)
         kernel.apply_svi.assert_called_once_with("irb.101", {"vlan_id": 101})
+
+    def test_svi_receives_irb_unit_addresses(self):
+        """family_inet/family_inet6 from interfaces.irb.unit are merged into apply_svi call."""
+        applier, kernel, _, _ = _make_applier()
+        full_config = {
+            "vlans": {"vlan101": {"vlan_id": 101, "l3_interface": "irb.101"}},
+            "interfaces": {
+                "irb": {
+                    "unit": {
+                        "101": {"family_inet": {"address": {"10.0.101.1/24": {}}}}
+                    }
+                }
+            },
+        }
+        applier.apply({}, full_config)
+        kernel.apply_svi.assert_called_once_with(
+            "irb.101",
+            {
+                "vlan_id": 101,
+                "family_inet": {"address": {"10.0.101.1/24": {}}},
+            },
+        )
 
     def test_changed_vlan_without_l3_interface_does_nothing(self):
         applier, kernel, _, _ = _make_applier()

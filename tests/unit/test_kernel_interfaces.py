@@ -440,3 +440,123 @@ def test_nos_managed_set_updated_correctly_after_address_change():
     driver.apply_interface("eth0", {"family_inet": {"address": {"10.0.0.5/30": {}}}})
 
     assert _iface_mod._nos_managed_addresses.get("eth0") == {("10.0.0.5", 30)}
+
+
+# ---------------------------------------------------------------------------
+# apply_svi
+# ---------------------------------------------------------------------------
+
+def test_apply_svi_creates_vlan_link_on_bridge():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [
+        [10],  # nos-br
+        [],    # irb.101 not found
+        [15],  # irb.101 after create
+    ]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi("irb.101", {"vlan_id": 101})
+
+    ip.link.assert_any_call("add", ifname="irb.101", kind="vlan", link=10, vlan_id=101)
+
+
+def test_apply_svi_derives_vlan_id_from_name():
+    """vlan_id inferred from irb.101 when not present in config."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[10], [], [15]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi("irb.101", {})
+
+    ip.link.assert_any_call("add", ifname="irb.101", kind="vlan", link=10, vlan_id=101)
+
+
+def test_apply_svi_reuses_existing_link():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [
+        [10],  # nos-br
+        [15],  # irb.101 already exists
+    ]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi("irb.101", {"vlan_id": 101})
+
+    for c in ip.link.call_args_list:
+        assert c.args[0] != "add", "Should not re-create an existing SVI"
+
+
+def test_apply_svi_applies_inet_address():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[10], [], [15]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi(
+        "irb.101",
+        {"vlan_id": 101, "family_inet": {"address": {"10.0.101.1/24": {}}}},
+    )
+    ip.addr.assert_any_call("add", index=15, address="10.0.101.1", prefixlen=24)
+
+
+def test_apply_svi_applies_inet6_address():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[10], [], [15]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi(
+        "irb.101",
+        {"vlan_id": 101, "family_inet6": {"address": {"2001:db8::1/64": {}}}},
+    )
+    ip.addr.assert_any_call("add", index=15, address="2001:db8::1", prefixlen=64)
+
+
+def test_apply_svi_sets_state_up():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[10], [], [15]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi("irb.101", {"vlan_id": 101})
+    ip.link.assert_any_call("set", index=15, state="up")
+
+
+def test_apply_svi_sets_state_down_when_disabled():
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[10], [], [15]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_svi("irb.101", {"vlan_id": 101, "disable": True})
+    ip.link.assert_any_call("set", index=15, state="down")
+
+
+def test_apply_svi_skips_when_bridge_missing(caplog):
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.apply_svi("irb.101", {"vlan_id": 101})
+    assert "nos-br" in caplog.text
+    ip.link.assert_not_called()
+
+
+def test_apply_svi_skips_when_no_vlan_id_derivable(caplog):
+    ip = MagicMock()
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.apply_svi("irb", {})
+    assert "vlan_id" in caplog.text
+    ip.link_lookup.assert_not_called()

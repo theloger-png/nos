@@ -87,6 +87,35 @@ class InterfaceDriver:
             self._sync_addresses(ip, idx, sub_name, config)
             self._apply_state(ip, idx, config)
 
+    def apply_svi(self, name: str, config: Dict[str, Any]) -> None:
+        """Create or update an SVI (VLAN interface on nos-br), e.g. irb.101."""
+        _BRIDGE = "nos-br"
+
+        vlan_id = config.get("vlan_id")
+        if vlan_id is None:
+            parts = name.split(".", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                vlan_id = int(parts[1])
+        if vlan_id is None:
+            logger.warning("SVI %s has no vlan_id; cannot create interface", name)
+            return
+
+        with self._iproute_factory() as ip:
+            bridge_idx = self._lookup(ip, _BRIDGE)
+            if bridge_idx is None:
+                logger.warning("Bridge %s not found; skipping SVI %s", _BRIDGE, name)
+                return
+
+            idx = self._lookup(ip, name)
+            if idx is None:
+                ip.link("add", ifname=name, kind="vlan", link=bridge_idx, vlan_id=int(vlan_id))
+                idx = self._lookup(ip, name)
+                if idx is None:
+                    raise RuntimeError(f"Failed to create SVI {name}")
+
+            self._sync_addresses(ip, idx, name, config)
+            self._apply_state(ip, idx, config)
+
     def delete_interface(self, name: str) -> None:
         """Delete a virtual interface (no-op for physical interfaces)."""
         if self._is_physical(name):

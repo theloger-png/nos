@@ -4,15 +4,7 @@
       "description": "internet"
     },
     "ens34": {
-      "unit": {
-        "0": {
-          "family_inet6": {
-            "address": {
-              "2a01:300:d::1/64": {}
-            }
-          }
-        }
-      }
+      "unit": {}
     }
   }
 }

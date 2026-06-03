@@ -635,25 +635,50 @@ class OperationalMode:
             name = row["name"]
             admin = row["admin"]
             link = row["link"]
-            unit = f"{name}.0"
-            # Physical interface row — link is the last field (no padding)
-            lines.append(f"{name:<24}{admin:<6}{link}")
-            # IPv4 logical unit rows
-            for i, ip in enumerate(row.get("addrs", [])):
-                if i == 0:
-                    lines.append(
-                        f"{unit:<24}{admin:<6}{link:<5}{'inet':<9}{ip}"
-                    )
+
+            if "." in name:
+                # Dotted interfaces (e.g. irb.101) are already logical units —
+                # render IP inline on the same row, no separate physical row.
+                addrs = row.get("addrs", [])
+                addrs6 = row.get("addrs6", [])
+                if not addrs and not addrs6:
+                    lines.append(f"{name:<24}{admin:<6}{link}")
                 else:
-                    lines.append(f"{'':44}{ip}")
-            # IPv6 logical unit rows (rendered after IPv4)
-            for i, ip in enumerate(row.get("addrs6", [])):
-                if i == 0:
-                    lines.append(
-                        f"{unit:<24}{admin:<6}{link:<5}{'inet6':<9}{ip}"
-                    )
-                else:
-                    lines.append(f"{'':44}{ip}")
+                    rendered_first = False
+                    for i, ip in enumerate(addrs):
+                        if i == 0 and not rendered_first:
+                            lines.append(f"{name:<24}{admin:<6}{link:<5}{'inet':<9}{ip}")
+                            rendered_first = True
+                        else:
+                            lines.append(f"{'':44}{ip}")
+                    for i, ip in enumerate(addrs6):
+                        if not rendered_first:
+                            lines.append(f"{name:<24}{admin:<6}{link:<5}{'inet6':<9}{ip}")
+                            rendered_first = True
+                        elif i == 0:
+                            lines.append(f"{'':35}{'inet6':<9}{ip}")
+                        else:
+                            lines.append(f"{'':44}{ip}")
+            else:
+                unit = f"{name}.0"
+                # Physical interface row — link is the last field (no padding)
+                lines.append(f"{name:<24}{admin:<6}{link}")
+                # IPv4 logical unit rows
+                for i, ip in enumerate(row.get("addrs", [])):
+                    if i == 0:
+                        lines.append(
+                            f"{unit:<24}{admin:<6}{link:<5}{'inet':<9}{ip}"
+                        )
+                    else:
+                        lines.append(f"{'':44}{ip}")
+                # IPv6 logical unit rows (rendered after IPv4)
+                for i, ip in enumerate(row.get("addrs6", [])):
+                    if i == 0:
+                        lines.append(
+                            f"{unit:<24}{admin:<6}{link:<5}{'inet6':<9}{ip}"
+                        )
+                    else:
+                        lines.append(f"{'':44}{ip}")
         return "\n".join(lines)
 
     def _render_description(self, rows: list[dict]) -> str:

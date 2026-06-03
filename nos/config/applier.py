@@ -167,12 +167,14 @@ class ConfigApplier:
                 self._kernel.delete_interface(svi_name)
 
         for name, config in new.items():
-            if config != old.get(name):
-                cfg = config or {}
-                svi_name = cfg.get("l3_interface")
-                if svi_name:
-                    log.info("Applying SVI %s for VLAN %s", svi_name, name)
-                    self._kernel.apply_svi(svi_name, {"vlan_id": cfg.get("vlan_id")})
+            cfg = config or {}
+            svi_name = cfg.get("l3_interface")
+            if svi_name:
+                log.info("Applying SVI %s for VLAN %s", svi_name, name)
+                vlan_id = cfg.get("vlan_id")
+                irb_units = (full_config.get("interfaces") or {}).get("irb", {}).get("unit") or {}
+                unit_cfg = irb_units.get(str(vlan_id)) or {}
+                self._kernel.apply_svi(svi_name, {"vlan_id": vlan_id, **unit_cfg})
 
     def _apply_routing_options(
         self,

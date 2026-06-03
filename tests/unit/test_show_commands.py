@@ -320,6 +320,17 @@ class TestShowInterfacesTerse:
         assert lines[1] == f"{'ens33':<24}{'up':<6}up"
         assert lines[2] == f"{'ens33.0':<24}{'up':<6}{'up':<5}{'inet':<9}172.18.4.44/29"
 
+    def test_dotted_interface_no_extra_unit_suffix(self, oper):
+        links = [_MockLink("irb.101", 2, 0, 1500, "UP")]
+        addrs = [_MockAddr(2, "10.1.1.1", 24)]
+        mock_ip = _make_iproute_mock(links, addrs)
+        with patch(_PATCH_IPROUTE, mock_ip):
+            out = oper.execute("show interfaces terse")
+        lines = out.splitlines()
+        assert lines[1] == f"{'irb.101':<24}{'up':<6}{'up':<5}{'inet':<9}10.1.1.1/24"
+        assert len(lines) == 2
+        assert "irb.101.0" not in out
+
     def test_multiple_ips_continuation_lines(self, oper):
         links = [_MockLink("eth0", 2, 0, 1500, "UP")]
         addrs = [
