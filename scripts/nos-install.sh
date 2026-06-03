@@ -79,6 +79,15 @@ info "Installing NOS Python package into venv…"
 "${VENV}/bin/pip" install --quiet -e "${REPO_ROOT}"
 ok "Python package installed."
 
+# ── 6a. grant cap_net_admin to Python 3.12 ────────────────────────────────────
+info "Granting cap_net_admin to /usr/bin/python3.12…"
+if [[ -x /usr/bin/python3.12 ]]; then
+    setcap cap_net_admin+eip /usr/bin/python3.12
+    ok "cap_net_admin granted to /usr/bin/python3.12."
+else
+    warn "/usr/bin/python3.12 not found — skipping setcap (nos-cli will need root to manage interfaces)."
+fi
+
 # ── 7. CLI entry point ────────────────────────────────────────────────────────
 info "Installing CLI entry point…"
 cat > /usr/local/bin/nos-cli <<'EOF'
