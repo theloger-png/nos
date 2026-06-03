@@ -155,6 +155,13 @@ class NOSShell:
             # Redraw the prompt
             event.app.renderer.reset()
 
+        @bindings.add(" ")
+        def complete_on_space(event):
+            """Insert a space then open the completion menu."""
+            buf = event.current_buffer
+            buf.insert_text(" ")
+            buf.start_completion(select_first=False)
+
         @bindings.add("c-c")
         def handle_ctrl_c(event):
             """Ctrl+C clears the current line (JunOS behaviour)."""
