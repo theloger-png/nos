@@ -8,7 +8,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 NOS_USER=nos
 VENV=/opt/nos/venv
 NOS_LIBDIR=/usr/lib/nos
-NOS_CONFDIR=/etc/nos
+NOS_CONFDIR=/opt/nos/config
 NOS_STATEDIR=/var/lib/nos
 NOS_RUNDIR=/run/nos
 
@@ -45,7 +45,9 @@ fi
 
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
-install -d -m 0755 -o root    -g root    "${NOS_CONFDIR}"
+install -d -m 0755 -o root    -g root         /opt/nos
+install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
+install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"
 install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_STATEDIR}"
 install -d "${NOS_RUNDIR}"
@@ -71,7 +73,6 @@ ok "PFE artifacts installed."
 
 # ── 6. Python venv + package ──────────────────────────────────────────────────
 info "Creating Python venv at ${VENV}…"
-install -d -m 0755 /opt/nos
 python3.12 -m venv "${VENV}"
 ok "Venv created."
 

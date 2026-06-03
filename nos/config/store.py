@@ -25,7 +25,7 @@ class ConfigStore:
         self.base_dir: Path = (
             Path(base_dir)
             if base_dir is not None
-            else Path(__file__).resolve().parent.parent.parent
+            else Path("/opt/nos")
         )
         self.running: dict = {}
         self.candidate: dict = {}
