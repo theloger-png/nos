@@ -16,6 +16,7 @@ setup(
     entry_points={
         "console_scripts": [
             "nos=nos.cli.shell:main",
+            "nos-apply=nos.cli.apply:main",
         ],
     },
     python_requires=">=3.11",

@@ -68,7 +68,7 @@ class NOSShell:
         hostname: Optional[str] = None,
         history_file: Optional[Path] = None,
     ) -> None:
-        self.store = store or ConfigStore()
+        self.store = store or ConfigStore(base_dir="/opt/nos")
         validator = ConfigValidator()
         pfe = PFEManager()
         pfe.start()

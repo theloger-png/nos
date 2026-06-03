@@ -1,0 +1,18 @@
+[Unit]
+Description=NOS Apply Running Configuration
+Documentation=https://github.com/nos-dev/nos
+After=nos-pfe.service
+Wants=nos-pfe.service
+Before=nos-cli.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/nos/venv/bin/nos-apply
+User=nos
+Group=nos
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+[Install]
+WantedBy=multi-user.target
