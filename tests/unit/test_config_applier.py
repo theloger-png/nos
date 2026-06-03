@@ -487,7 +487,7 @@ class TestSwitchport:
         old = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
         new = {"interfaces": {"eth1": {}}}
         applier.apply(old, new)
-        kernel.apply_vlan.assert_called_with("nos-br", "eth1", {})
+        kernel.detach_port.assert_called_with("nos-br", "eth1")
 
     def test_removed_interface_with_switchport_calls_delete(self):
         applier, kernel, _, _ = _make_applier()
