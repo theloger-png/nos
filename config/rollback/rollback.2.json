@@ -2,23 +2,6 @@
   "interfaces": {
     "ens33": {
       "description": "internet"
-    },
-    "irb": {
-      "unit": {
-        "101": {
-          "family_inet": {
-            "address": {
-              "10.0.0.1/24": {}
-            }
-          }
-        }
-      }
-    }
-  },
-  "vlans": {
-    "vlan101": {
-      "vlan_id": 101,
-      "l3_interface": "irb.101"
     }
   }
 }

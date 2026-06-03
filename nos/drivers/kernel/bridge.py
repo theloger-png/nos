@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -54,7 +55,9 @@ class BridgeDriver:
                 br_idx = self._lookup(ip, name)
                 if br_idx is None:
                     raise RuntimeError(f"Failed to create bridge {name}")
-                logger.debug("Created bridge %s (idx=%d)", name, br_idx)
+                mac = self._get_mac_for_bridge(ip, config.get("ports") or [], name)
+                ip.link("set", index=br_idx, address=mac)
+                logger.debug("Created bridge %s (idx=%d) mac=%s", name, br_idx, mac)
 
             ip.link("set", index=br_idx, state="up")
 
@@ -157,6 +160,27 @@ class BridgeDriver:
         if existing_master != br_idx:
             ip.link("set", index=port_idx, master=br_idx, state="up")
             logger.debug("Added %s (idx=%d) to bridge idx=%d", port_name, port_idx, br_idx)
+
+    def _get_mac_for_bridge(self, ip: IPRoute, ports: List[str], bridge_name: str) -> str:
+        """Return a colon-separated MAC string to assign to the bridge.
+
+        pyroute2's l2addr type expects "aa:bb:cc:dd:ee:ff" strings for both
+        get and set operations — never raw bytes.
+
+        Uses the first available port's hardware MAC so that bridges on
+        different VMs get distinct addresses.  Falls back to a
+        locally-administered unicast MAC derived from the bridge name.
+        """
+        for port_name in ports:
+            links = ip.link("get", ifname=port_name)
+            if links:
+                mac = links[0].get_attr("IFLA_ADDRESS")
+                if mac:
+                    return mac  # already "aa:bb:cc:dd:ee:ff" from pyroute2 l2addr.decode()
+        digest = hashlib.sha256(bridge_name.encode()).digest()
+        mac_bytes = bytearray(digest[:6])
+        mac_bytes[0] = (mac_bytes[0] | 0x02) & 0xFE  # locally-administered, unicast
+        return ":".join(f"{b:02x}" for b in mac_bytes)
 
     @staticmethod
     def _lookup(ip: IPRoute, name: str) -> Optional[int]:
