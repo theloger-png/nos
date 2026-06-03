@@ -2,11 +2,12 @@
 Description=NOS CLI Shell
 Documentation=https://github.com/nos-dev/nos
 After=network.target nos-pfe.service
+Wants=nos-pfe.service
 
 [Service]
 Type=simple
-ExecStartPre=/bin/chown root:nos /run/nos
-ExecStartPre=/bin/chmod 775 /run/nos
+ExecStartPre=/bin/bash -c 'chown root:nos /run/nos 2>/dev/null || true'
+ExecStartPre=/bin/bash -c 'chmod 775 /run/nos 2>/dev/null || true'
 ExecStartPre=/bin/bash -c 'test -S /run/nos/pfe.sock && chown root:nos /run/nos/pfe.sock && chmod 660 /run/nos/pfe.sock || true'
 ExecStart=/usr/local/bin/nos-cli
 User=nos

@@ -17,6 +17,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -85,9 +86,20 @@ static struct client g_clients[MAX_CLIENTS];
 
 static int write_pid_file(void)
 {
-    if (mkdir(PFE_RUN_DIR, 0755) < 0 && errno != EEXIST) {
+    if (mkdir(PFE_RUN_DIR, 0775) < 0 && errno != EEXIST) {
         log_warn("mkdir %s: %s", PFE_RUN_DIR, strerror(errno));
         /* non-fatal */
+    }
+
+    /* Ensure correct perms regardless of umask or prior state. */
+    if (chmod(PFE_RUN_DIR, 0775) < 0)
+        log_warn("chmod %s: %s", PFE_RUN_DIR, strerror(errno));
+
+    struct group *grp = getgrnam("nos");
+    if (!grp) {
+        log_warn("group 'nos' not found — %s group ownership not set", PFE_RUN_DIR);
+    } else if (chown(PFE_RUN_DIR, 0, grp->gr_gid) < 0) {
+        log_warn("chown %s to root:nos: %s", PFE_RUN_DIR, strerror(errno));
     }
 
     FILE *f = fopen(PFE_PID_FILE, "w");
