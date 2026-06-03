@@ -46,6 +46,8 @@ fi
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
+chown root:"${NOS_USER}" /opt/nos
+chmod 775 /opt/nos
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"

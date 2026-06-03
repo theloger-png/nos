@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # Physical / pre-existing interface name prefixes — skip creation for these.
 _PHYSICAL_PREFIXES = ("eth", "ens", "enp", "eno", "lo", "bond", "team")
 
-_STATE_FILE = Path("/run/nos/managed_addresses.json")
+_STATE_FILE = Path("/opt/nos/managed_addresses.json")
 
 
 def _load_managed_addresses() -> dict[str, set[tuple[str, int]]]:
@@ -40,7 +40,6 @@ def _save_managed_addresses() -> None:
         }
         with open(_STATE_FILE, 'w') as f:
             f.write(json.dumps(data))
-        _STATE_FILE.chmod(0o664)
     except Exception as exc:
         logger.warning("Could not save managed addresses to %s: %s", _STATE_FILE, exc)
 

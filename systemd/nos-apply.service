@@ -13,6 +13,7 @@ User=nos
 Group=nos
 AmbientCapabilities=CAP_NET_ADMIN
 CapabilityBoundingSet=CAP_NET_ADMIN
+UMask=0002
 
 [Install]
 WantedBy=multi-user.target
