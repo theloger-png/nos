@@ -325,6 +325,12 @@ def _enrich_bgp(
 
     bgp_table: dict = data.get("routes", {})
 
+    def _is_bestpath(entry):
+        bp = entry.get("bestpath", False)
+        if isinstance(bp, dict):
+            return bp.get("overall", False)
+        return bool(bp)
+
     for route in bgp_routes:
         entries = bgp_table.get(route.prefix, [])
         if not entries:
@@ -332,7 +338,7 @@ def _enrich_bgp(
 
         # Prefer the entry with bestpath.overall = True
         best = next(
-            (e for e in entries if e.get("bestpath", {}).get("overall", False)),
+            (e for e in entries if _is_bestpath(e)),
             entries[0] if entries else None,
         )
         if best is None:
