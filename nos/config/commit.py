@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
-import shutil
+import os
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
@@ -71,14 +71,23 @@ class CommitEngine:
             src = self._rollback_path(n)
             dst = self._rollback_path(n + 1)
             if src.exists():
-                shutil.copy(src, dst)
+                with open(src, "r") as src_fh:
+                    content = src_fh.read()
+                with open(dst, "w") as dst_fh:
+                    dst_fh.write(content)
+                os.chmod(dst, 0o664)
         running_path = self.store._running_path
         if running_path.exists():
-            shutil.copy(running_path, self._rollback_path(0))
+            with open(running_path, "r") as src_fh:
+                content = src_fh.read()
+            with open(self._rollback_path(0), "w") as dst_fh:
+                dst_fh.write(content)
+            os.chmod(self._rollback_path(0), 0o664)
         else:
             # Write empty config as checkpoint so rollback.0 always exists post-commit
             with open(self._rollback_path(0), "w") as fh:
                 json.dump(self.store.running, fh, indent=2)
+            os.chmod(self._rollback_path(0), 0o664)
 
     def _do_commit(self) -> None:
         """Internal: rotate rollbacks and promote candidate → running."""
