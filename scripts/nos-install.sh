@@ -66,15 +66,37 @@ fi
 # nos-cli needs to write the file and restart FRR when protocols are committed.
 # A targeted sudoers rule grants exactly those two operations, nothing more.
 info "Installing sudoers rule for FRR daemon management…"
-cat > /etc/sudoers.d/nos-frr <<'SUDOERS'
+
+# Determine the human user running the install (via sudo)
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+
+# Build the sudoers content
+read -r -d '' SUDOERS_CONTENT <<'SUDOERS' || true
 # Allow the nos service account to update /etc/frr/daemons and /etc/frr/frr.conf and restart FRR.
 # These are written by nos/drivers/frr/client.py:FRRClient.sync_daemons().
 nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/daemons
 nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/frr.conf
 nos ALL=(ALL) NOPASSWD: /bin/systemctl restart frr
 SUDOERS
+
+# Add human user if present
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_CONTENT+="
+# Allow the human user to manage FRR daemons during development.
+$HUMAN_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/daemons
+$HUMAN_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/frr.conf
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart frr"
+fi
+
+echo "$SUDOERS_CONTENT" > /etc/sudoers.d/nos-frr
 chmod 0440 /etc/sudoers.d/nos-frr
 ok "Sudoers rule installed at /etc/sudoers.d/nos-frr."
+if [[ -n "$HUMAN_USER" ]]; then
+    ok "  Added FRR sudoers rules for user '$HUMAN_USER'."
+fi
 
 # ── 2d. FRR log file permissions ────────────────────────────────────────────────
 info "Fixing FRR log file permissions…"
