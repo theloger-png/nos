@@ -584,6 +584,13 @@ _ETH_SWITCH_TABLE_SUBCMDS: dict[str, str] = {
     "summary":   "Show per-VLAN and per-interface entry counts",
 }
 
+_ETH_SWITCH_MAIN_SUBCMDS: dict[str, str] = {
+    "table":      "Show MAC/FDB table",
+    "interface":  "Show per-interface switching information",
+    "statistics": "Show per-interface switching statistics",
+    "flood":      "Show flood group membership",
+}
+
 _OPER_PIPE_VERBS: dict[str, str] = {
     "display": "Change output format",
     "match":   "Show lines matching a pattern",
@@ -838,15 +845,15 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # "show ethernet-switching table [interface <if>|vlan <v>|summary]"
+        # "show ethernet-switching [table|interface|statistics|flood] [...]"
         if resolved_sub == "ethernet-switching":
             eth_rest = rest[1:]
             eth_prefix = "" if completing_new else (eth_rest[-1] if eth_rest else "")
             if not eth_rest or (len(eth_rest) == 1 and not completing_new):
-                if "table".startswith(eth_prefix):
-                    yield Completion(
-                        "table", -len(eth_prefix), display_meta="Show MAC/FDB table"
-                    )
+                # Offer main subcommands: table, interface, statistics, flood
+                for kw, meta in _ETH_SWITCH_MAIN_SUBCMDS.items():
+                    if kw.startswith(eth_prefix):
+                        yield Completion(kw, -len(eth_prefix), display_meta=meta)
             elif eth_rest[0].lower() == "table":
                 tbl_rest = eth_rest[1:]
                 tbl_prefix = "" if completing_new else (tbl_rest[-1] if tbl_rest else "")
@@ -862,6 +869,15 @@ class NOSCompleter(Completer):
                     elif completing_new and last_kw.lower() in ("interface", "vlan"):
                         hint = "<interface-name>" if last_kw.lower() == "interface" else "<vlan-name-or-id>"
                         yield Completion(hint, display_meta=_ETH_SWITCH_TABLE_SUBCMDS[last_kw.lower()])
+            elif eth_rest[0].lower() in ("interface", "statistics"):
+                # For "interface" and "statistics", offer optional interface name argument
+                iface_rest = eth_rest[1:]
+                iface_prefix = "" if completing_new else (iface_rest[-1] if iface_rest else "")
+                if not iface_rest or (len(iface_rest) == 1 and not completing_new):
+                    yield Completion(
+                        "<interface-name>", -len(iface_prefix),
+                        display_meta="Optional: filter by interface name"
+                    )
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
