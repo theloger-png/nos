@@ -641,6 +641,15 @@ _CONFIGURE_PIPE_VERBS: dict[str, str] = {
     "no-more": "Disable pagination",
 }
 
+_BGP_SUBCMDS: dict[str, str] = {
+    "summary":  "Show BGP summary information",
+    "neighbor": "Show BGP neighbor information",
+}
+
+_BGP_SUMMARY_SUBCMDS: dict[str, str] = {
+    "detail": "Show detailed BGP summary per neighbor",
+}
+
 _IFACE_SUB_CMDS = {
     "terse": "One-line interface status",
     "description": "Interface descriptions",
@@ -1027,7 +1036,36 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # All other show sub-commands (bgp, isis, vlans, system, forwarding)
+        # "show bgp [summary [detail] | neighbor [<ip>]]"
+        if resolved_sub == "bgp":
+            bgp_rest = rest[1:]
+            bgp_prefix = "" if completing_new else (bgp_rest[-1] if bgp_rest else "")
+
+            if not bgp_rest or (len(bgp_rest) == 1 and not completing_new):
+                for kw, meta in _BGP_SUBCMDS.items():
+                    if kw.startswith(bgp_prefix):
+                        yield Completion(kw, -len(bgp_prefix), display_meta=meta)
+            elif bgp_rest[0].lower() == "summary":
+                sub_rest = bgp_rest[1:]
+                sub_prefix = "" if completing_new else (sub_rest[-1] if sub_rest else "")
+                if not sub_rest or (len(sub_rest) == 1 and not completing_new):
+                    for kw, meta in _BGP_SUMMARY_SUBCMDS.items():
+                        if kw.startswith(sub_prefix):
+                            yield Completion(kw, -len(sub_prefix), display_meta=meta)
+            elif bgp_rest[0].lower() == "neighbor":
+                nbr_rest = bgp_rest[1:]
+                nbr_prefix = "" if completing_new else (nbr_rest[-1] if nbr_rest else "")
+                if not nbr_rest or (len(nbr_rest) == 1 and not completing_new):
+                    if not _looks_like_real_value(nbr_prefix):
+                        yield Completion(
+                            "<ip-address>", -len(nbr_prefix),
+                            display_meta="BGP neighbor IP address",
+                        )
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # All other show sub-commands (isis, vlans, system, forwarding)
         if completing_new:
             yield Completion("|", display_meta="Filter output")
 
