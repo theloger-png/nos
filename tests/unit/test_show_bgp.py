@@ -573,6 +573,26 @@ class TestShowBgp:
         out = show_bgp(["summary"], frr=frr, alias_fn=lambda x: x)
         assert "BGP summary information" in out
 
+    def test_summary_prefix_sum(self):
+        frr = _make_frr(summary=SUMMARY_ACTIVE)
+        out = show_bgp(["sum"], frr=frr)
+        assert "BGP summary information" in out
+
+    def test_summary_prefix_summ(self):
+        frr = _make_frr(summary=SUMMARY_ACTIVE)
+        out = show_bgp(["summ"], frr=frr)
+        assert "BGP summary information" in out
+
+    def test_neighbor_prefix_neigh(self):
+        frr = _make_frr(neighbors=NEIGHBOR_ACTIVE)
+        out = show_bgp(["neigh"], frr=frr)
+        assert "Peer: 10.0.0.2" in out
+
+    def test_neighbor_prefix_n(self):
+        frr = _make_frr(neighbors=NEIGHBOR_ACTIVE)
+        out = show_bgp(["n"], frr=frr)
+        assert "Peer: 10.0.0.2" in out
+
 
 # ============================================================================
 # Integration — operational mode

@@ -17,6 +17,8 @@ import json
 import logging
 from typing import Callable, Optional, TYPE_CHECKING
 
+from nos.cli.parser import resolve_prefix
+
 if TYPE_CHECKING:
     from nos.drivers.frr.client import FRRClient
 
@@ -279,7 +281,10 @@ def show_bgp(
     if frr is None:
         return _NOT_RUNNING
 
-    sub = args[0].lower() if args else "summary"
+    sub_raw = args[0].lower() if args else "summary"
+    sub, err = resolve_prefix(sub_raw, ["summary", "neighbor"])
+    if err:
+        return f"error: {err}"
     rest = args[1:]
 
     if sub == "summary":
