@@ -109,6 +109,7 @@ class BGPGenerator:
             for proto in (inet_redist or []):
                 lines.append(f"  redistribute {proto}")
             lines.append(f"  neighbor {name} activate")
+            lines.append(f"  neighbor {name} soft-reconfiguration inbound")
             export = group.get("export")
             if export:
                 lines.append(f"  neighbor {name} route-map {export} out")
@@ -123,6 +124,7 @@ class BGPGenerator:
             for proto in (inet6_redist or []):
                 lines.append(f"  redistribute {proto}")
             lines.append(f"  neighbor {name} activate")
+            lines.append(f"  neighbor {name} soft-reconfiguration inbound")
             lines.append(" exit-address-family")
 
         return lines
