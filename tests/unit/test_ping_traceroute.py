@@ -227,7 +227,7 @@ class TestPingCompleter:
 
     def test_host_hint_while_typing_host(self):
         kws = complete("ping 10")
-        assert any("<host>" in k for k in kws)
+        assert not any("<host>" in k for k in kws)
 
     def test_options_offered_after_host(self):
         kws = complete("ping 10.0.0.1 ")
@@ -260,9 +260,9 @@ class TestPingCompleter:
         assert "no-resolve" not in kws
 
     def test_partial_value_completes_hint(self):
-        # Typing "ping 10.0.0.1 count 1" — still completing the value token
+        # Typing "ping 10.0.0.1 count 1" — user has already typed a value, hint should not appear
         kws = complete("ping 10.0.0.1 count 1")
-        assert any("<1-255>" in k for k in kws)
+        assert not any("<1-255>" in k for k in kws)
 
     def test_multiple_opts_then_new(self):
         kws = complete("ping 10.0.0.1 count 3 no-resolve ")
@@ -282,7 +282,7 @@ class TestTracerouteCompleter:
 
     def test_host_hint_while_typing_host(self):
         kws = complete("traceroute 192")
-        assert any("<host>" in k for k in kws)
+        assert not any("<host>" in k for k in kws)
 
     def test_options_offered_after_host(self):
         kws = complete("traceroute 10.0.0.1 ")

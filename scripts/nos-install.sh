@@ -43,6 +43,15 @@ else
     ok "User '${NOS_USER}' created."
 fi
 
+# ── 2a. frrvty group membership ───────────────────────────────────────────────
+info "Adding '${NOS_USER}' to frrvty group for vtysh access…"
+if getent group frrvty &>/dev/null; then
+    usermod -aG frrvty "${NOS_USER}"
+    ok "Added '${NOS_USER}' to frrvty."
+else
+    warn "Group 'frrvty' not found — install frr first, then re-run this script."
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos

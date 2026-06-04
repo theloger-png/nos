@@ -729,11 +729,17 @@ class OperationalMode:
         return "\n".join(lines)
 
     def _show_route(self, args: list[str]) -> str:
-        return (
-            "\ninet.0: (routes from kernel FIB — requires PFE integration)\n\n"
-            "  show route is not yet implemented in Phase 1 CLI.\n"
-            "  Use 'ip route show' via the shell for now.\n"
+        from nos.cli.commands.show.route import show_route
+        from nos.drivers.frr.client import FRRClient
+
+        alias_map = self._get_alias_map()
+        alias_fn = (
+            (lambda name: _to_alias(name, alias_map))
+            if alias_map and _ALIAS_AVAILABLE
+            else None
         )
+        frr = FRRClient()
+        return show_route(args, frr=frr, alias_fn=alias_fn)
 
     def _show_bgp(self, args: list[str]) -> str:
         sub = args[0].lower() if args else "summary"

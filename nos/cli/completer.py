@@ -295,6 +295,20 @@ CONFIG_TREE: ConfigNode = build_config_tree()
 _DOTTED_UNIT_RE = re.compile(r'^([^.]+)\.(\d+)$')
 
 
+def _is_hint(s: str) -> bool:
+	"""Return True if s is a hint (starts with '<' and ends with '>')."""
+	return s.startswith("<") and s.endswith(">")
+
+
+def _looks_like_real_value(prefix: str) -> bool:
+	"""Return True if prefix looks like the user has typed a real value, not a hint.
+
+	A value looks "real" if it's non-empty and doesn't start with '<'.
+	This prevents hints from replacing partially-typed values.
+	"""
+	return bool(prefix) and not prefix.startswith("<")
+
+
 def _advance_past_unit(iface_inner: ConfigNode, unit_str: str) -> ConfigNode:
     """Return the tree node reached after consuming <iface> unit <unit-str>.
 
@@ -442,9 +456,10 @@ def _completions_at_node(
                     )
         else:
             hint = node.value_hint
-            results.append(
-                Completion(hint, -len(prefix), display_meta=node.help)
-            )
+            if not _looks_like_real_value(prefix):
+                results.append(
+                    Completion(hint, -len(prefix), display_meta=node.help)
+                )
         return results
 
     # Static keyword children
@@ -464,7 +479,7 @@ def _completions_at_node(
                                    display_meta=node.dynamic_child.help)
                     )
         hint = node.dynamic_hint
-        if not prefix or hint.startswith(prefix):
+        if not _looks_like_real_value(prefix) and (not prefix or hint.startswith(prefix)):
             results.append(
                 Completion(hint, -len(prefix),
                            display_meta=node.dynamic_child.help)
@@ -574,6 +589,20 @@ _SHOW_OPER_ARGS = {
     "configuration": "Show running configuration (tree format)",
 }
 
+_ROUTE_SUBCMDS: dict[str, str] = {
+    "detail":   "Show detailed route information",
+    "terse":    "Show one-line route entries",
+    "hidden":   "Show routes not installed in FIB",
+    "protocol": "Filter by routing protocol",
+}
+
+_ROUTE_PROTOCOLS: list[str] = ["bgp", "direct", "isis", "local", "ospf", "static"]
+
+
+def _is_ip_prefix_token(tok: str) -> bool:
+    """Return True when *tok* looks like an IP prefix, not a subcommand keyword."""
+    return bool(tok) and (tok[0].isdigit() or "/" in tok or ":" in tok)
+
 _ARP_SUBCMDS: dict[str, str] = {
     "interface": "Filter by interface name",
     "hostname":  "Filter by IP address",
@@ -659,7 +688,8 @@ def _complete_probe_opts(
 
     if pending_value_for is not None:
         hint, desc = opts[pending_value_for]
-        yield Completion(hint, -len(prefix), display_meta=desc)
+        if not _looks_like_real_value(prefix):
+            yield Completion(hint, -len(prefix), display_meta=desc)
         return
 
     for kw, (_, desc) in sorted(opts.items()):
@@ -943,7 +973,52 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # All other show sub-commands (route, bgp, isis, vlans, system, forwarding)
+        # "show route [detail|terse|hidden|protocol <proto>|<prefix>]"
+        if resolved_sub == "route":
+            route_rest   = rest[1:]
+            route_prefix = "" if completing_new else (route_rest[-1] if route_rest else "")
+
+            if not route_rest or (len(route_rest) == 1 and not completing_new):
+                # Offer sub-commands and a prefix hint
+                for kw, meta in _ROUTE_SUBCMDS.items():
+                    if kw.startswith(route_prefix):
+                        yield Completion(kw, -len(route_prefix), display_meta=meta)
+                if (not route_prefix or "<prefix>".startswith(route_prefix)) and not _is_ip_prefix_token(route_prefix):
+                    yield Completion(
+                        "<prefix>", -len(route_prefix),
+                        display_meta="IP prefix (e.g. 10.0.0.0/24)",
+                    )
+            else:
+                # Inside 'show route <sub> ...'
+                last_kw = route_rest[-2].lower() if len(route_rest) >= 2 else ""
+                cur_kw  = route_rest[-1].lower() if route_rest else ""
+
+                if completing_new and cur_kw == "protocol":
+                    for proto in _ROUTE_PROTOCOLS:
+                        yield Completion(proto, display_meta=f"Show {proto} routes")
+                elif not completing_new and last_kw == "protocol":
+                    for proto in _ROUTE_PROTOCOLS:
+                        if proto.startswith(route_prefix):
+                            yield Completion(proto, -len(route_prefix),
+                                             display_meta=f"Show {proto} routes")
+                elif not completing_new:
+                    # In the middle of typing a subcommand/prefix after prefix/subcommand
+                    for kw, meta in _ROUTE_SUBCMDS.items():
+                        if kw.startswith(route_prefix):
+                            yield Completion(kw, -len(route_prefix), display_meta=meta)
+                elif completing_new:
+                    # After a word boundary offer subcommands; include "protocol"
+                    # only when the preceding token was an IP prefix, not another subcmd.
+                    include_protocol = _is_ip_prefix_token(cur_kw)
+                    for kw, meta in _ROUTE_SUBCMDS.items():
+                        if include_protocol or kw != "protocol":
+                            yield Completion(kw, display_meta=meta)
+
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # All other show sub-commands (bgp, isis, vlans, system, forwarding)
         if completing_new:
             yield Completion("|", display_meta="Filter output")
 
@@ -952,7 +1027,8 @@ class NOSCompleter(Completer):
     ) -> Generator[Completion, None, None]:
         if not rest or (len(rest) == 1 and not completing_new):
             prefix = rest[0] if rest else ""
-            yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
+            if not _looks_like_real_value(prefix):
+                yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
             return
         opt_tokens = rest[1:]
         prefix = "" if completing_new else (opt_tokens[-1] if opt_tokens else "")
@@ -964,7 +1040,8 @@ class NOSCompleter(Completer):
     ) -> Generator[Completion, None, None]:
         if not rest or (len(rest) == 1 and not completing_new):
             prefix = rest[0] if rest else ""
-            yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
+            if not _looks_like_real_value(prefix):
+                yield Completion("<host>", -len(prefix), display_meta="Hostname or IP address")
             return
         opt_tokens = rest[1:]
         prefix = "" if completing_new else (opt_tokens[-1] if opt_tokens else "")
@@ -1003,7 +1080,8 @@ class NOSCompleter(Completer):
         elif resolved == "up":
             if not rest or (len(rest) == 1 and not completing_new):
                 prefix = rest[0] if rest and not completing_new else ""
-                yield Completion("<count>", -len(prefix), display_meta="Number of levels to go up")
+                if not _looks_like_real_value(prefix):
+                    yield Completion("<count>", -len(prefix), display_meta="Number of levels to go up")
 
     def _complete_show_configure(
         self, rest: list[str], completing_new: bool
@@ -1034,11 +1112,17 @@ class NOSCompleter(Completer):
                     yield Completion(kw, -len(prefix), display_meta=desc)
         elif rest[0] == "confirmed" and (len(rest) == 1 and completing_new or
                                           len(rest) == 2 and not completing_new):
-            yield Completion("<minutes>", display_meta="Auto-rollback timeout in minutes")
+            if len(rest) == 1 and completing_new:
+                yield Completion("<minutes>", display_meta="Auto-rollback timeout in minutes")
+            elif len(rest) == 2 and not completing_new:
+                prefix = rest[1]
+                if not _looks_like_real_value(prefix):
+                    yield Completion("<minutes>", display_meta="Auto-rollback timeout in minutes")
 
     def _complete_rollback(
         self, rest: list[str], completing_new: bool
     ) -> Generator[Completion, None, None]:
         if not rest or (len(rest) == 1 and not completing_new):
             prefix = rest[0] if rest and not completing_new else ""
-            yield Completion("<0-49>", -len(prefix), display_meta="Rollback checkpoint number")
+            if not _looks_like_real_value(prefix):
+                yield Completion("<0-49>", -len(prefix), display_meta="Rollback checkpoint number")
