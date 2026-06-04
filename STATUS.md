@@ -36,12 +36,14 @@
 - `show ethernet-switching flood` — per-VLAN flood group membership
 - `show configuration` — tree format + `| display set` pipe
 - `show route` - JunOS format, IPv4/IPv6, brief/detail/terse/hidden, protocol filter, prefix filter
-- `show bgp` (stub)
+- `show bgp summary` - JunOS format with peer states and prefix counts
+- `show bgp neighbor [<ip>]` - detailed neighbor information
 - `show isis` (stub)
 
 ### Backend Drivers
 - Kernel: interfaces, bridge, routes, VRF (pyroute2, never iproute2 CLI directly)
 - FRR: client, renderer, IS-IS, BGP
+- FRR daemons auto-enabled/disabled based on configured protocols (bgpd, isisd, ospfd)
 - Subinterface deletion for physical parents (ens34.101 deletable)
 - Physical interface detached from bridge on delete
 - `nos-br` bridge deleted when last port is detached
@@ -92,4 +94,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1302 passing, 0 failing - 2026-06-04
+- Total: 1397 passing, 0 failing - 2026-06-04
