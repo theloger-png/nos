@@ -7,6 +7,91 @@ from nos.config.applier import ConfigApplier, ConfigApplyError
 
 
 # ---------------------------------------------------------------------------
+# System section — interface_rename migration
+# ---------------------------------------------------------------------------
+
+class TestSystemInterfaceRename:
+    """Tests for _apply_system migration when interface_rename changes."""
+
+    def _setup(self):
+        kernel = MagicMock()
+        frr = MagicMock()
+        pfe = MagicMock()
+        pfe.is_available.return_value = False
+        store = MagicMock()
+        store.running = {
+            "system": {"interface_rename": True},
+            "interfaces": {"ens33": {"description": "uplink"}, "ens34": {}},
+        }
+        applier = ConfigApplier(kernel, frr, pfe, store=store)
+        return applier, store
+
+    def test_migration_updates_store_when_enabled(self):
+        applier, store = self._setup()
+        with (
+            patch("nos.utils.interface_alias.detect_physical_interfaces", return_value=["ens33", "ens34"]),
+            patch("nos.utils.interface_alias.save_alias_map"),
+        ):
+            applier.apply(
+                {"system": {"interface_rename": False}},
+                {"system": {"interface_rename": True}},
+            )
+        store.save_running.assert_called_once()
+        store.save_candidate.assert_called_once()
+
+    def test_migration_translates_interface_names(self):
+        applier, store = self._setup()
+        with (
+            patch("nos.utils.interface_alias.detect_physical_interfaces", return_value=["ens33", "ens34"]),
+            patch("nos.utils.interface_alias.save_alias_map"),
+        ):
+            applier.apply(
+                {"system": {"interface_rename": False}},
+                {"system": {"interface_rename": True}},
+            )
+        assert "et0" in store.running["interfaces"]
+        assert "et1" in store.running["interfaces"]
+        assert "ens33" not in store.running["interfaces"]
+
+    def test_migration_still_happens_on_save_alias_map_permission_error(self):
+        applier, store = self._setup()
+        with (
+            patch("nos.utils.interface_alias.detect_physical_interfaces", return_value=["ens33", "ens34"]),
+            patch("nos.utils.interface_alias.save_alias_map", side_effect=PermissionError("/opt/nos not writable")),
+        ):
+            applier.apply(
+                {"system": {"interface_rename": False}},
+                {"system": {"interface_rename": True}},
+            )
+        store.save_running.assert_called_once()
+        store.save_candidate.assert_called_once()
+        assert "et0" in store.running["interfaces"]
+
+    def test_no_migration_when_interface_rename_unchanged(self):
+        applier, store = self._setup()
+        applier.apply(
+            {"system": {"interface_rename": True}},
+            {"system": {"interface_rename": True}},
+        )
+        store.save_running.assert_not_called()
+
+    def test_no_migration_when_store_is_none(self):
+        kernel = MagicMock()
+        frr = MagicMock()
+        pfe = MagicMock()
+        pfe.is_available.return_value = False
+        applier = ConfigApplier(kernel, frr, pfe)  # store=None
+        with (
+            patch("nos.utils.interface_alias.detect_physical_interfaces", return_value=["ens33"]),
+            patch("nos.utils.interface_alias.save_alias_map"),
+        ):
+            applier.apply(
+                {"system": {"interface_rename": False}},
+                {"system": {"interface_rename": True}},
+            )  # must not raise
+
+
+# ---------------------------------------------------------------------------
 # Fixtures / helpers
 # ---------------------------------------------------------------------------
 
@@ -377,13 +462,20 @@ class TestSectionIsolation:
         frr.write_frr_conf.side_effect = RuntimeError("fail")
 
         new = {
+            # interface_rename True→True triggers no migration (no-op) in system
+            # section; to force a system failure we enable it from off.
+            "system": {"interface_rename": True},
             "interfaces": {"eth0": _IFACE_CFG},
             "vlans": {"vlan101": _VLAN_SVI_CFG},
             "routing_options": {"static": {"route": {"10.0.0.0/24": _ROUTE_CFG}}},
             "protocols": {"isis": {"interface": {"eth0": {}}}},
         }
-        with pytest.raises(ConfigApplyError):
-            applier.apply({}, new)
+        with patch(
+            "nos.utils.interface_alias.detect_physical_interfaces",
+            side_effect=RuntimeError("fail"),
+        ):
+            with pytest.raises(ConfigApplyError):
+                applier.apply({}, new)
 
     def test_three_sections_fail_no_error_raised(self):
         """One passing section is enough to suppress ConfigApplyError."""
@@ -577,3 +669,207 @@ class TestUnitVlanId:
         cfg = {"interfaces": {"ens34": {"unit": {"200": unit_cfg}}}}
         applier.apply({}, cfg)
         kernel.apply_subinterface.assert_called_once_with("ens34", 200, unit_cfg)
+
+
+# ---------------------------------------------------------------------------
+# Alias → physical translation when interface_rename is enabled
+# ---------------------------------------------------------------------------
+
+_ALIAS_MAP = {"ens33": "et0", "ens34": "et1"}
+_RENAME_ON = {"system": {"interface_rename": True}}
+
+
+def _make_rename_applier():
+    """Return an applier with interface_rename enabled and a mocked alias map."""
+    kernel = MagicMock()
+    frr = MagicMock()
+    pfe = MagicMock()
+    pfe.is_available.return_value = False
+    return ConfigApplier(kernel, frr, pfe), kernel, frr, pfe
+
+
+class TestInterfaceRenameTranslation:
+    """Kernel/FRR calls always receive physical names when interface_rename is on."""
+
+    def test_apply_interface_translates_alias_to_physical(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        cfg = {**_RENAME_ON, "interfaces": {"et0": {"description": "uplink"}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply({}, cfg)
+        kernel.apply_interface.assert_called_once_with("ens33", {"description": "uplink"})
+
+    def test_delete_interface_translates_alias_to_physical(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        old = {**_RENAME_ON, "interfaces": {"et0": {}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply(old, _RENAME_ON)
+        kernel.delete_interface.assert_called_with("ens33")
+
+    def test_sync_addresses_uses_physical_name(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        unit_cfg = {"family_inet": {"address": {"10.0.0.1/30": {}}}}
+        cfg = {**_RENAME_ON, "interfaces": {"et0": {"unit": {"0": unit_cfg}}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply({}, cfg)
+        kernel.sync_interface_addresses.assert_called_once_with("ens33", unit_cfg)
+
+    def test_delete_subinterface_uses_physical_name(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        old = {**_RENAME_ON, "interfaces": {"et0": {"unit": {"100": {"vlan_id": 100}}}}}
+        new = {**_RENAME_ON, "interfaces": {"et0": {}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply(old, new)
+        kernel.delete_interface.assert_any_call("ens33.100")
+
+    def test_bridge_and_vlan_use_physical_name(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        cfg = {
+            **_RENAME_ON,
+            "interfaces": {
+                "et1": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": [100]},
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply({}, cfg)
+        kernel.apply_bridge.assert_called_with("nos-br", {"ports": ["ens34"]})
+        kernel.apply_vlan.assert_called_with(
+            "nos-br", "ens34", {"interface_mode": "access", "vlans": [100]}
+        )
+
+    def test_detach_port_uses_physical_name(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        kernel.get_bridge_ports.return_value = []
+        old = {
+            **_RENAME_ON,
+            "interfaces": {
+                "et1": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": ["vlan100"]},
+                            }
+                        }
+                    }
+                }
+            },
+        }
+        new = {**_RENAME_ON, "interfaces": {"et1": {}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            applier.apply(old, new)
+        kernel.detach_port.assert_called_with("nos-br", "ens34")
+
+    def test_no_translation_when_rename_disabled(self):
+        applier, kernel, _, _ = _make_rename_applier()
+        cfg = {"interfaces": {"et0": {"description": "uplink"}}}
+        applier.apply({}, cfg)
+        kernel.apply_interface.assert_called_once_with("et0", {"description": "uplink"})
+
+    def test_frr_renderer_receives_physical_names(self):
+        applier, _, frr, _ = _make_rename_applier()
+        cfg = {
+            **_RENAME_ON,
+            "protocols": {"isis": {"interface": {"et0": {"point_to_point": True}}}},
+        }
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=_ALIAS_MAP):
+            with patch.object(applier._renderer, "render", return_value="conf") as mock_render:
+                applier.apply({}, cfg)
+        render_arg = mock_render.call_args[0][0]
+        assert "ens33" in render_arg["protocols"]["isis"]["interface"]
+        assert "et0" not in render_arg["protocols"]["isis"]["interface"]
+
+    def test_frr_no_translation_when_rename_disabled(self):
+        applier, _, frr, _ = _make_rename_applier()
+        cfg = {"protocols": {"isis": {"interface": {"et0": {}}}}}
+        with patch.object(applier._renderer, "render", return_value="conf") as mock_render:
+            applier.apply({}, cfg)
+        render_arg = mock_render.call_args[0][0]
+        assert "et0" in render_arg["protocols"]["isis"]["interface"]
+
+
+# ---------------------------------------------------------------------------
+# True→False disable transition: pending reverse map bridges the gap
+# ---------------------------------------------------------------------------
+
+class TestInterfaceRenameDisableTransition:
+    """When interface_rename goes True→False, new_config still carries alias names
+    because _apply_system replaces store.running with a new object rather than
+    mutating it in place.  _pending_reverse_alias_map must bridge this gap so
+    _apply_interfaces and _apply_protocols still call the kernel/FRR with
+    physical names (ens33/ens34), not alias names (et0/et1).
+    """
+
+    _ALIAS_MAP = {"ens33": "et0", "ens34": "et1"}
+
+    # new_config mirrors what _do_commit passes: post-commit, still alias keys
+    _OLD = {"system": {"interface_rename": True},  "interfaces": {"et0": {"description": "up"}, "et1": {}}}
+    _NEW = {"system": {"interface_rename": False}, "interfaces": {"et0": {"description": "up"}, "et1": {}}}
+
+    def _make(self):
+        kernel = MagicMock()
+        frr    = MagicMock()
+        pfe    = MagicMock()
+        pfe.is_available.return_value = False
+        store  = MagicMock()
+        store.running = dict(self._NEW)
+        return ConfigApplier(kernel, frr, pfe, store=store), kernel, frr, pfe, store
+
+    def test_kernel_receives_physical_names_not_aliases(self):
+        applier, kernel, _, _, _ = self._make()
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=self._ALIAS_MAP):
+            applier.apply(self._OLD, self._NEW)
+        names = {c[0][0] for c in kernel.apply_interface.call_args_list}
+        assert names == {"ens33", "ens34"}, f"unexpected kernel names: {names}"
+
+    def test_no_alias_interfaces_created_in_kernel(self):
+        applier, kernel, _, _, _ = self._make()
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=self._ALIAS_MAP):
+            applier.apply(self._OLD, self._NEW)
+        all_iface_args = [c[0][0] for c in kernel.apply_interface.call_args_list]
+        assert "et0" not in all_iface_args
+        assert "et1" not in all_iface_args
+
+    def test_frr_renderer_receives_physical_names_during_disable(self):
+        applier, _, _, _, _ = self._make()
+        # old has no protocols; new adds one — ensures isis_changed=True so FRR runs
+        old = dict(self._OLD)
+        new = {**self._NEW, "protocols": {"isis": {"interface": {"et0": {"point_to_point": True}}}}}
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=self._ALIAS_MAP):
+            with patch.object(applier._renderer, "render", return_value="conf") as mock_render:
+                applier.apply(old, new)
+        render_arg = mock_render.call_args[0][0]
+        assert "ens33" in render_arg["protocols"]["isis"]["interface"]
+        assert "et0"   not in render_arg["protocols"]["isis"]["interface"]
+
+    def test_pending_map_cleared_at_start_of_next_apply(self):
+        """Stale pending map from a disable transition does not affect the next call."""
+        applier, kernel, _, _, _ = self._make()
+        # First apply: disable transition populates _pending_reverse_alias_map
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=self._ALIAS_MAP):
+            applier.apply(self._OLD, self._NEW)
+        # Second apply: completely unrelated, rename=False throughout, no pending map
+        kernel.reset_mock()
+        applier.apply(
+            {"interfaces": {"et0": {"description": "prev"}}},
+            {"interfaces": {"et0": {"description": "new"}}},
+        )
+        # With no pending map, et0 passes through as-is (no translate)
+        kernel.apply_interface.assert_called_once_with("et0", {"description": "new"})
+
+    def test_no_translation_when_alias_map_file_missing(self):
+        """If interface_map.json was already gone, pending map is None → no crash."""
+        applier, kernel, _, _, _ = self._make()
+        with patch("nos.utils.interface_alias.load_alias_map", return_value=None):
+            # Should not raise; kernel gets names as-is (best-effort)
+            applier.apply(self._OLD, self._NEW)
+        # Just verify it doesn't blow up and makes some kernel calls
+        assert kernel.apply_interface.called

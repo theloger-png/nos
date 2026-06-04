@@ -1,7 +1,9 @@
 """Config applier — translates committed config changes into driver and PFE calls."""
 from __future__ import annotations
 
-from typing import Any, Dict
+import copy
+import os
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from pyroute2 import IPRoute
 
@@ -9,6 +11,9 @@ from nos.drivers.base import BaseDriver
 from nos.drivers.frr.renderer import FRRRenderer
 from nos.pfe.manager import PFEManager
 from nos.utils.logger import get_logger
+
+if TYPE_CHECKING:
+    from nos.config.store import ConfigStore
 
 log = get_logger(__name__)
 
@@ -30,18 +35,23 @@ class ConfigApplier:
         kernel_driver: BaseDriver,
         frr_driver: Any,  # expected: FRRClient — must have write_frr_conf(str)
         pfe_manager: PFEManager,
+        store: Optional["ConfigStore"] = None,
     ) -> None:
         self._kernel = kernel_driver
         self._frr = frr_driver
         self._pfe = pfe_manager
+        self._store = store
         self._renderer = FRRRenderer()
+        self._pending_reverse_alias_map: Optional[dict] = None
 
     def apply(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
         """Apply the diff between *old_config* and *new_config* to the system.
 
         Raises ConfigApplyError if every section fails.
         """
+        self._pending_reverse_alias_map = None
         handlers = {
+            "system": self._apply_system,
             "interfaces": self._apply_interfaces,
             "vlans": self._apply_vlans,
             "routing_options": self._apply_routing_options,
@@ -62,6 +72,93 @@ class ConfigApplier:
             raise ConfigApplyError(f"All config sections failed: {failed}")
 
     # ── section handlers ─────────────────────────────────────────────────────
+
+    def _apply_system(
+        self,
+        old: Dict[str, Any],
+        new: Dict[str, Any],
+        full_config: Dict[str, Any],
+    ) -> None:
+        old_rename = (old or {}).get("interface_rename", False)
+        new_rename = (new or {}).get("interface_rename", False)
+        if old_rename == new_rename:
+            return
+
+        from nos.utils.interface_alias import (
+            detect_physical_interfaces,
+            generate_alias_map,
+            load_alias_map,
+            migrate_config,
+            migrate_config_reverse,
+            save_alias_map,
+        )
+
+        if new_rename:
+            # False → True: detect physical interfaces, build and save alias map,
+            # then migrate the running and candidate configs to use aliases.
+            physical = detect_physical_interfaces()
+            alias_map = generate_alias_map(physical)
+            try:
+                save_alias_map(alias_map)
+            except OSError as exc:
+                log.warning(
+                    "interface_rename: could not persist alias map to %s: %s",
+                    "/opt/nos/interface_map.json",
+                    exc,
+                )
+            if self._store is not None:
+                migrated = migrate_config(self._store.running, alias_map)
+                self._store.running = migrated
+                self._store.save_running()
+                self._store.candidate = copy.deepcopy(migrated)
+                self._store.save_candidate()
+            log.info(
+                "interface_rename enabled: %d aliases generated", len(alias_map)
+            )
+        else:
+            # True → False: reverse-migrate configs back to physical names,
+            # then delete the alias map file.
+            alias_map = load_alias_map()
+            # Stash before deleting the file so _apply_interfaces can still
+            # translate alias names (et0→ens33) in new_config, which still
+            # holds alias names because _apply_system replaced store.running
+            # with a new object rather than mutating it in place.
+            self._pending_reverse_alias_map = alias_map
+            if alias_map is not None and self._store is not None:
+                migrated = migrate_config_reverse(self._store.running, alias_map)
+                self._store.running = migrated
+                self._store.save_running()
+                self._store.candidate = copy.deepcopy(migrated)
+                self._store.save_candidate()
+            try:
+                os.remove("/opt/nos/interface_map.json")
+            except FileNotFoundError:
+                pass
+            log.info("interface_rename disabled: physical names restored")
+
+    # ── alias translation helpers ─────────────────────────────────────────────
+
+    def _get_alias_map(self, full_config: Dict[str, Any]) -> Optional[dict]:
+        """Return alias→physical map for use in kernel/FRR calls.
+
+        Enabled (rename=True): load from the map file.
+        Disable transition (rename=False, pending map set by _apply_system):
+            return the in-memory map so handlers can still translate alias names
+            that survive in new_config after _apply_system replaced store.running.
+        Steady-state disabled: return None (no translation needed).
+        """
+        if (full_config.get("system") or {}).get("interface_rename", False):
+            from nos.utils.interface_alias import load_alias_map
+            return load_alias_map()
+        return self._pending_reverse_alias_map
+
+    @staticmethod
+    def _phys(name: str, alias_map: Optional[dict]) -> str:
+        """Translate an alias interface name to its physical kernel name."""
+        if alias_map is None:
+            return name
+        from nos.utils.interface_alias import to_physical
+        return to_physical(name, alias_map)
 
     def _resolve_vlan_ids(
         self, members: list, vlans_config: Dict[str, Any]
@@ -87,32 +184,36 @@ class ConfigApplier:
         new: Dict[str, Any],
         full_config: Dict[str, Any],
     ) -> None:
+        alias_map = self._get_alias_map(full_config)
+
         for name in set(old) - set(new):
+            phys = self._phys(name, alias_map)
             old_cfg = old.get(name) or {}
             old_units = old_cfg.get("unit") or {}
             if "0" in old_units:
                 log.info("Clearing addresses on interface %s (deleted)", name)
-                self._kernel.clear_nos_addresses(name, old_units.get("0") or {})
+                self._kernel.clear_nos_addresses(phys, old_units.get("0") or {})
             for unit_num_str in old_units:
                 unit_num = int(unit_num_str)
                 if unit_num > 0:
                     log.info("Deleting subinterface %s.%d", name, unit_num)
-                    self._kernel.delete_interface(f"{name}.{unit_num}")
+                    self._kernel.delete_interface(f"{phys}.{unit_num}")
             if any((unit_cfg or {}).get("family_ethernet_switching") for unit_cfg in old_units.values()):
                 log.info("Detaching %s from bridge (interface deleted)", name)
-                self._kernel.detach_port("nos-br", name)
+                self._kernel.detach_port("nos-br", phys)
                 if not self._kernel.get_bridge_ports("nos-br"):
                     log.info("No ports left on nos-br; deleting bridge")
                     self._kernel.delete_bridge("nos-br")
             log.info("Deleting interface %s", name)
-            self._kernel.delete_interface(name)
+            self._kernel.delete_interface(phys)
 
         for name, config in new.items():
+            phys = self._phys(name, alias_map)
             cfg = config or {}
             old_cfg = old.get(name) or {}
 
             log.info("Applying interface %s", name)
-            self._kernel.apply_interface(name, cfg)
+            self._kernel.apply_interface(phys, cfg)
 
             old_units = old_cfg.get("unit") or {}
             new_units = cfg.get("unit") or {}
@@ -122,13 +223,13 @@ class ConfigApplier:
                 old_unit_cfg = old_units.get(unit_num_str) or {}
                 if unit_num == 0:
                     log.info("Clearing addresses on interface %s (unit 0 removed)", name)
-                    self._kernel.sync_interface_addresses(name, {})
+                    self._kernel.sync_interface_addresses(phys, {})
                 else:
                     log.info("Deleting subinterface %s.%d", name, unit_num)
-                    self._kernel.delete_interface(f"{name}.{unit_num}")
+                    self._kernel.delete_interface(f"{phys}.{unit_num}")
                 if old_unit_cfg.get("family_ethernet_switching"):
                     log.info("Detaching %s from bridge (unit removed)", name)
-                    self._kernel.detach_port("nos-br", name)
+                    self._kernel.detach_port("nos-br", phys)
                     if not self._kernel.get_bridge_ports("nos-br"):
                         log.info("No ports left on nos-br; deleting bridge")
                         self._kernel.delete_bridge("nos-br")
@@ -140,20 +241,20 @@ class ConfigApplier:
                     continue
                 if unit_num == 0:
                     log.info("Syncing addresses on interface %s (unit 0)", name)
-                    self._kernel.sync_interface_addresses(name, unit_config)
+                    self._kernel.sync_interface_addresses(phys, unit_config)
                 else:
                     log.info("Applying subinterface %s.%d", name, unit_num)
-                    self._kernel.apply_subinterface(name, unit_num, unit_config)
+                    self._kernel.apply_subinterface(phys, unit_num, unit_config)
                 sw = unit_config.get("family_ethernet_switching")
                 if sw:
                     log.info("Applying switchport on %s", name)
-                    self._kernel.apply_bridge("nos-br", {"ports": [name]})
+                    self._kernel.apply_bridge("nos-br", {"ports": [phys]})
                     vlans_cfg = full_config.get("vlans") or {}
                     members = (sw.get("vlan") or {}).get("members") or []
                     if not isinstance(members, list):
                         members = [members]
                     vlan_ids = self._resolve_vlan_ids(members, vlans_cfg)
-                    self._kernel.apply_vlan("nos-br", name, {
+                    self._kernel.apply_vlan("nos-br", phys, {
                         "interface_mode": sw.get("interface_mode"),
                         "vlans": vlan_ids,
                     })
@@ -164,7 +265,7 @@ class ConfigApplier:
                             and isinstance(vlan_ids[0], int)):
                         try:
                             with IPRoute() as ip:
-                                idx = ip.link_lookup(ifname=name)
+                                idx = ip.link_lookup(ifname=phys)
                             if idx:
                                 xdp_mode = 0 if iface_mode == "access" else 1
                                 self._pfe.port_vlan_set(
@@ -244,5 +345,10 @@ class ConfigApplier:
             return
 
         log.info("Applying protocol config (IS-IS/BGP changed)")
-        rendered = self._renderer.render(full_config)
+        alias_map = self._get_alias_map(full_config)
+        render_config = full_config
+        if alias_map is not None:
+            from nos.utils.interface_alias import migrate_config_reverse
+            render_config = migrate_config_reverse(full_config, alias_map)
+        rendered = self._renderer.render(render_config)
         self._frr.write_frr_conf(rendered)

@@ -110,6 +110,7 @@ def build_config_tree() -> ConfigNode:
                 ]),
             })),
         }),
+        "interface-rename": _p("Rename physical interfaces to et0, et1, …"),
     })
 
     # ── interfaces ─────────────────────────────────────────────────────────
@@ -681,6 +682,27 @@ class NOSCompleter(Completer):
         self.edit_path: list[str] = edit_path
         self.store = store
 
+    def _get_iface_names(self) -> list[str]:
+        """Return interface names for completion, honoring interface_rename.
+
+        When interface_rename is enabled the alias names (et0, et1, …) are
+        returned; otherwise the names come from the running config's interfaces
+        section so we avoid a live kernel call during tab-completion.
+        """
+        if self.store is None:
+            return []
+        try:
+            cfg = self.store.get_running()
+            sys_cfg = cfg.get("system") or {}
+            if sys_cfg.get("interface_rename", False):
+                from nos.utils.interface_alias import get_alias_map
+                alias_map = get_alias_map()
+                return sorted(alias_map.values())
+            ifaces = cfg.get("interfaces", {})
+            return sorted(k.replace("_", "-") for k in ifaces.keys())
+        except Exception:
+            return []
+
     def get_completions(
         self, document: Document, complete_event: CompleteEvent
     ) -> Generator[Completion, None, None]:
@@ -801,7 +823,12 @@ class NOSCompleter(Completer):
             elif completing_new:
                 last_kw = arp_rest[-1].lower()
                 if last_kw == "interface":
-                    yield Completion("<interface-name>", display_meta="Interface name")
+                    ifaces = self._get_iface_names()
+                    if ifaces:
+                        for iface in ifaces:
+                            yield Completion(iface, display_meta="Interface name")
+                    else:
+                        yield Completion("<interface-name>", display_meta="Interface name")
                 elif last_kw == "hostname":
                     yield Completion("<ip-address>", display_meta="IP address")
             if completing_new:
@@ -828,7 +855,12 @@ class NOSCompleter(Completer):
                             display_meta="Filter by interface name",
                         )
                 elif completing_new and nbr_rest[-1].lower() == "interface":
-                    yield Completion("<interface-name>", display_meta="Interface name")
+                    ifaces = self._get_iface_names()
+                    if ifaces:
+                        for iface in ifaces:
+                            yield Completion(iface, display_meta="Interface name")
+                    else:
+                        yield Completion("<interface-name>", display_meta="Interface name")
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
@@ -867,17 +899,38 @@ class NOSCompleter(Completer):
                     if not completing_new and len(tbl_rest) == 1:
                         pass  # still typing the keyword itself — handled above
                     elif completing_new and last_kw.lower() in ("interface", "vlan"):
-                        hint = "<interface-name>" if last_kw.lower() == "interface" else "<vlan-name-or-id>"
-                        yield Completion(hint, display_meta=_ETH_SWITCH_TABLE_SUBCMDS[last_kw.lower()])
+                        if last_kw.lower() == "interface":
+                            ifaces = self._get_iface_names()
+                            if ifaces:
+                                for iface in ifaces:
+                                    yield Completion(iface, display_meta="Interface name")
+                            else:
+                                yield Completion(
+                                    "<interface-name>",
+                                    display_meta=_ETH_SWITCH_TABLE_SUBCMDS["interface"],
+                                )
+                        else:
+                            yield Completion(
+                                "<vlan-name-or-id>",
+                                display_meta=_ETH_SWITCH_TABLE_SUBCMDS["vlan"],
+                            )
             elif eth_rest[0].lower() in ("interface", "statistics"):
-                # For "interface" and "statistics", offer optional interface name argument
                 iface_rest = eth_rest[1:]
                 iface_prefix = "" if completing_new else (iface_rest[-1] if iface_rest else "")
                 if not iface_rest or (len(iface_rest) == 1 and not completing_new):
-                    yield Completion(
-                        "<interface-name>", -len(iface_prefix),
-                        display_meta="Optional: filter by interface name"
-                    )
+                    ifaces = self._get_iface_names()
+                    if ifaces:
+                        for iface in ifaces:
+                            if iface.startswith(iface_prefix):
+                                yield Completion(
+                                    iface, -len(iface_prefix),
+                                    display_meta="Filter by interface name",
+                                )
+                    else:
+                        yield Completion(
+                            "<interface-name>", -len(iface_prefix),
+                            display_meta="Optional: filter by interface name",
+                        )
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return

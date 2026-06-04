@@ -29,7 +29,7 @@ def main() -> None:
     pfe.start()
     kernel_driver = KernelDriver()
     frr_client = FRRClient()
-    applier = ConfigApplier(kernel_driver, frr_client, pfe)
+    applier = ConfigApplier(kernel_driver, frr_client, pfe, store=store)
 
     log.info("Applying running configuration...")
     try:

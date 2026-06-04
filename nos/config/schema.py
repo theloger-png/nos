@@ -126,6 +126,7 @@ class SystemConfig(BaseModel):
     ntp: Optional[NtpConfig] = None
     login: Optional[LoginConfig] = None
     syslog: Optional[SyslogConfig] = None
+    interface_rename: bool = False
 
     @field_validator("name_server", mode="before")
     @classmethod

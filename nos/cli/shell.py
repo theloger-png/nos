@@ -74,7 +74,7 @@ class NOSShell:
         pfe.start()
         kernel_driver = KernelDriver()
         frr_client = FRRClient()
-        applier = ConfigApplier(kernel_driver, frr_client, pfe)
+        applier = ConfigApplier(kernel_driver, frr_client, pfe, store=self.store)
         self.commit_engine = CommitEngine(self.store, validator=validator, applier=applier)
         self.username = username or getpass.getuser()
         self.hostname = hostname or socket.gethostname().split(".")[0]

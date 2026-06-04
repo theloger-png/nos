@@ -74,6 +74,12 @@
 - Production mode: NOS full control of interfaces (disable netplan) — not yet
 - Interface aliases: rename `ens34` → `et0`, `et1`, etc.
 
+## Phase 2 — Planned Features
+- DHCP server: per-interface/IRB config (range, dns-server, lease-time, gateway auto-detected from IRB address)
+- DHCP relay: forward to external server
+- NAT: masquerade, SNAT, DNAT, nftables backend
+- ACL / firewall filters: JunOS firewall filter syntax, applied per-interface inbound/outbound
+
 ## Architecture Decisions
 - JunOS-like CLI identical syntax
 - Python 3.12 control plane, C for PFE/XDP

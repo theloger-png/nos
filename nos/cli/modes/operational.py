@@ -49,6 +49,13 @@ from nos.config.serializer import to_set_commands
 from nos.config.store import ConfigStore
 from nos.pfe.manager import ForwardingMode, PFEManager
 
+try:
+    from nos.utils.interface_alias import get_alias_map as _load_alias_map
+    from nos.utils.interface_alias import to_alias as _to_alias
+    _ALIAS_AVAILABLE = True
+except ImportError:  # pragma: no cover
+    _ALIAS_AVAILABLE = False
+
 console = Console()
 _parser = CommandParser()
 
@@ -170,6 +177,24 @@ class OperationalMode:
         self.store = store
         self._pfe = pfe
 
+    def _get_alias_map(self) -> "dict[str, str] | None":
+        """Return alias map when interface_rename is enabled, else None."""
+        if not _ALIAS_AVAILABLE:
+            return None
+        cfg = self.store.get_running()
+        if (cfg.get("system") or {}).get("interface_rename", False):
+            try:
+                return _load_alias_map()
+            except Exception:
+                return None
+        return None
+
+    def _iface_display(self, name: str, alias_map: "dict[str, str] | None") -> str:
+        """Translate a kernel interface name to its display name."""
+        if alias_map and _ALIAS_AVAILABLE:
+            return _to_alias(name, alias_map)
+        return name
+
     def execute(self, line: str) -> Optional[str]:
         """Parse and execute one command line.
 
@@ -279,11 +304,12 @@ class OperationalMode:
             _LOG.warning("ARP table read failed (%s)", exc)
             return None
 
+        alias_map = self._get_alias_map()
         idx_to_name: dict[int, str] = {}
         for link in links:
             name = link.get_attr("IFLA_IFNAME")
             if name:
-                idx_to_name[link["index"]] = name
+                idx_to_name[link["index"]] = self._iface_display(name, alias_map)
 
         entries: list[dict] = []
         for nbr in neighbours:
@@ -363,11 +389,12 @@ class OperationalMode:
             _LOG.warning("IPv6 neighbor table read failed (%s)", exc)
             return None
 
+        alias_map = self._get_alias_map()
         idx_to_name: dict[int, str] = {}
         for link in links:
             name = link.get_attr("IFLA_IFNAME")
             if name:
-                idx_to_name[link["index"]] = name
+                idx_to_name[link["index"]] = self._iface_display(name, alias_map)
 
         entries: list[dict] = []
         for nbr in neighbours:
@@ -475,6 +502,7 @@ class OperationalMode:
                     addr6_map.setdefault(idx, []).append(f"{ip}/{prefix}")
 
         include_lo = "lo" in args
+        alias_map = self._get_alias_map()
 
         lines: list[str] = []
         for link in sorted(links, key=lambda l: l.get_attr("IFLA_IFNAME") or ""):
@@ -484,12 +512,14 @@ class OperationalMode:
             if link["flags"] & _IFF_LOOPBACK and not include_lo:
                 continue
 
+            display_name = self._iface_display(name, alias_map)
             idx = link["index"]
             kernel_mtu = link.get_attr("IFLA_MTU") or 1500
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
             link_state = "Up" if operstate == "UP" else "Down"
 
-            cfg_key = name.replace("-", "_")
+            # Config key: use display_name (alias or physical) since config stores aliases
+            cfg_key = display_name.replace("-", "_")
             iface_cfg = ifaces_cfg.get(cfg_key, {})
             if not isinstance(iface_cfg, dict):
                 iface_cfg = {}
@@ -499,7 +529,7 @@ class OperationalMode:
             state = "Disabled" if disabled else "Enabled"
             mtu = iface_cfg.get("mtu", kernel_mtu)
 
-            lines.append(f"Physical interface: {name}, {state}, Physical link is {link_state}")
+            lines.append(f"Physical interface: {display_name}, {state}, Physical link is {link_state}")
             if desc:
                 lines.append(f"  Description: {desc}")
             lines.append(f"  Link-level type: Ethernet, MTU: {mtu}")
@@ -574,6 +604,7 @@ class OperationalMode:
                     prefix = addr["prefixlen"]
                     addr6_map.setdefault(idx, []).append(f"{ip}/{prefix}")
 
+        alias_map = self._get_alias_map()
         rows: list[dict] = []
         for link in sorted(links, key=lambda l: l.get_attr("IFLA_IFNAME") or ""):
             name = link.get_attr("IFLA_IFNAME")
@@ -582,7 +613,8 @@ class OperationalMode:
             if link["flags"] & _IFF_LOOPBACK and not include_lo:
                 continue
 
-            cfg_key = name.replace("-", "_")
+            display_name = self._iface_display(name, alias_map)
+            cfg_key = display_name.replace("-", "_")
             iface_cfg = ifaces_cfg.get(cfg_key, {})
             if not isinstance(iface_cfg, dict):
                 iface_cfg = {}
@@ -591,7 +623,7 @@ class OperationalMode:
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
             idx = link["index"]
             rows.append({
-                "name": name,
+                "name": display_name,
                 "admin": "down" if disabled else "up",
                 "link": "up" if operstate == "UP" else "down",
                 "mtu": iface_cfg.get("mtu", link.get_attr("IFLA_MTU") or 1500),
@@ -772,8 +804,11 @@ class OperationalMode:
             try:
                 with IPRoute() as ipr:
                     if ipr.link_lookup(ifname="nos-br"):
+                        alias_map = self._get_alias_map()
                         idx_to_name: dict[int, str] = {
-                            lnk["index"]: lnk.get_attr("IFLA_IFNAME")
+                            lnk["index"]: self._iface_display(
+                                lnk.get_attr("IFLA_IFNAME"), alias_map
+                            )
                             for lnk in ipr.get_links()
                             if lnk.get_attr("IFLA_IFNAME")
                         }
@@ -844,6 +879,7 @@ class OperationalMode:
             return "error: could not read kernel interfaces"
 
         pfe_active = self._pfe is not None and self._pfe.is_available()
+        alias_map = self._get_alias_map()
         header = f"{'Interface':<13}{'Mode':<14}Status"
         rows: list[str] = []
 
@@ -854,6 +890,7 @@ class OperationalMode:
             if link["flags"] & _IFF_LOOPBACK:
                 continue
 
+            display_name = self._iface_display(name, alias_map)
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
             status = "active" if operstate == "UP" else "inactive"
             mode = (
@@ -861,7 +898,7 @@ class OperationalMode:
                 if pfe_active
                 else ForwardingMode.KERNEL
             )
-            rows.append(f"{name:<13}{mode.value:<14}{status}")
+            rows.append(f"{display_name:<13}{mode.value:<14}{status}")
 
         if not rows:
             return header + "\n(no interfaces found)"
@@ -922,11 +959,14 @@ class OperationalMode:
 
                 # Build ifindex → name lookup table for port name resolution.
                 links = ipr.get_links()
+                alias_map = self._get_alias_map()
                 idx_to_name: dict[int, str] = {}
                 for link in links:
                     name = link.get_attr("IFLA_IFNAME")
                     if name:
-                        idx_to_name[link["index"]] = name
+                        idx_to_name[link["index"]] = self._iface_display(
+                            name, alias_map
+                        )
 
                 raw = ipr.fdb("dump")
 
@@ -1093,6 +1133,7 @@ class OperationalMode:
         ifaces_cfg = cfg.get("interfaces", {})
         vlan_map = self._build_vlan_id_map()  # {vlan_id: vlan_name}
 
+        alias_map = self._get_alias_map()
         operstate_map: dict[str, str] = {}
         if IPRoute is not None:
             try:
@@ -1100,7 +1141,8 @@ class OperationalMode:
                     for lnk in ipr.get_links():
                         name = lnk.get_attr("IFLA_IFNAME")
                         if name:
-                            operstate_map[name] = (
+                            display = self._iface_display(name, alias_map)
+                            operstate_map[display] = (
                                 lnk.get_attr("IFLA_OPERSTATE") or "UNKNOWN"
                             ).upper()
             except Exception as exc:
@@ -1184,12 +1226,14 @@ class OperationalMode:
         except Exception as exc:
             _LOG.warning("interface stats read failed (%s)", exc)
             return None
+        alias_map = self._get_alias_map()
         result: dict[str, dict] = {}
         for lnk in links:
             name = lnk.get_attr("IFLA_IFNAME")
             if name:
+                display = self._iface_display(name, alias_map)
                 s = lnk.get_attr("IFLA_STATS64") or lnk.get_attr("IFLA_STATS") or {}
-                result[name] = s
+                result[display] = s
         return result
 
     def _show_es_statistics(self, args: list[str]) -> str:
