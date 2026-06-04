@@ -326,12 +326,43 @@ class BgpNeighbor(BaseModel):
     hold_time: Optional[int] = Field(None, ge=0, le=65535)
 
 
+_REDIST_PROTOCOLS: frozenset[str] = frozenset(
+    {"connected", "static", "kernel", "isis", "ospf", "rip"}
+)
+
+
 class BgpFamilyInet(BaseModel):
     unicast: bool = False
+    redistribute: Dict[str, bool] = {}
+
+    @field_validator("redistribute", mode="before")
+    @classmethod
+    def validate_redistribute(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            for proto in v:
+                if proto not in _REDIST_PROTOCOLS:
+                    raise ValueError(
+                        f"Invalid redistribute protocol {proto!r}. "
+                        f"Must be one of: {', '.join(sorted(_REDIST_PROTOCOLS))}"
+                    )
+        return v
 
 
 class BgpFamilyInet6(BaseModel):
     unicast: bool = False
+    redistribute: Dict[str, bool] = {}
+
+    @field_validator("redistribute", mode="before")
+    @classmethod
+    def validate_redistribute(cls, v: Any) -> Any:
+        if isinstance(v, dict):
+            for proto in v:
+                if proto not in _REDIST_PROTOCOLS:
+                    raise ValueError(
+                        f"Invalid redistribute protocol {proto!r}. "
+                        f"Must be one of: {', '.join(sorted(_REDIST_PROTOCOLS))}"
+                    )
+        return v
 
 
 class BgpGroup(BaseModel):
@@ -373,6 +404,8 @@ class BgpGroup(BaseModel):
 
 class BgpConfig(BaseModel):
     group: Dict[str, BgpGroup] = {}
+    family_inet: Optional[BgpFamilyInet] = None
+    family_inet6: Optional[BgpFamilyInet6] = None
 
 
 class ProtocolsConfig(BaseModel):
@@ -411,8 +444,19 @@ class PolicyTerm(BaseModel):
     then_config: Optional[PolicyThenConfig] = None
 
 
+class FinalTermAction(BaseModel):
+    """Action for the unnamed final term of a policy-statement.
+
+    Exactly one of accept/reject/next_policy should be set.
+    """
+    accept: bool = False
+    reject: bool = False
+    next_policy: bool = False
+
+
 class PolicyStatement(BaseModel):
     term: Dict[str, PolicyTerm] = {}
+    then: Optional[FinalTermAction] = None
 
 
 class PolicyOptionsConfig(BaseModel):

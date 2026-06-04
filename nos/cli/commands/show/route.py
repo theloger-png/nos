@@ -14,6 +14,8 @@ Command variants:
   show route protocol [bgp|isis|ospf|static|direct]
   show route table [inet.0|inet6.0]
   show route table [inet.0|inet6.0] detail
+  show route advertising-protocol bgp <neighbor-ip>
+  show route receive-protocol bgp <neighbor-ip>
 """
 from __future__ import annotations
 
@@ -359,6 +361,139 @@ def _enrich_bgp(
             route.as_path = (route.as_path + " " + origin_code).strip()
 
 
+# ── BGP adjacency-RIB (advertising / receiving) ──────────────────────────────
+
+_ORIGIN_CODE: dict[str, str] = {"IGP": "I", "EGP": "E", "incomplete": "?"}
+
+_ADJ_TABLE_HDR = (
+    "  "
+    + f"{'Prefix':<24}"
+    + f"{'Nexthop':<15}"
+    + f"{'MED':>6}"
+    + "  "
+    + f"{'Lclpref':>7}"
+    + "  AS path"
+)
+
+
+def _frr_adj_fetch(frr: "FRRClient", cmd: str) -> tuple[dict, Optional[str]]:
+    """Run *cmd* via FRR; return (parsed_dict, error_str_or_None)."""
+    try:
+        raw = frr.show(cmd)
+    except Exception as exc:
+        _LOG.debug("FRR %r failed: %s", cmd, exc)
+        return {}, str(exc)
+    try:
+        return json.loads(raw), None
+    except json.JSONDecodeError:
+        raw_lower = raw.lower()
+        if "no such neighbor" in raw_lower or "unknown neighbor" in raw_lower:
+            return {}, "neighbor_not_found"
+        _LOG.debug("FRR %r returned non-JSON: %.120s", cmd, raw)
+        return {}, raw.strip()
+
+
+def _parse_bgp_adj_json(data: dict, route_key: str) -> list[dict]:
+    """Parse FRR adj-RIB JSON (*advertisedRoutes* or *receivedRoutes*)."""
+    routes_raw = data.get(route_key, {})
+    if not isinstance(routes_raw, dict):
+        return []
+
+    result: list[dict] = []
+    for prefix_str, entry in routes_raw.items():
+        if not isinstance(entry, dict):
+            continue
+
+        nexthop   = entry.get("nextHop") or entry.get("nexthop") or ""
+        local_pref = entry.get("locPrf") or entry.get("localPref")
+        med_raw   = entry.get("metric")
+        med       = med_raw if med_raw else None   # treat 0/None as blank
+
+        path_raw = entry.get("path") or entry.get("aspath") or ""
+        if isinstance(path_raw, dict):
+            path_raw = path_raw.get("string", "")
+        origin = entry.get("origin", "IGP")
+        origin_code = _ORIGIN_CODE.get(origin, "I")
+        as_path = f"{path_raw} {origin_code}".strip() if path_raw else origin_code
+
+        result.append({
+            "prefix":     prefix_str,
+            "nexthop":    nexthop,
+            "local_pref": local_pref,
+            "med":        med,
+            "as_path":    as_path,
+        })
+
+    return sorted(result, key=lambda r: _sort_key(r["prefix"]))
+
+
+def _render_adj_table(routes: list[dict], table_name: str) -> str:
+    """Render one adj-RIB table in JunOS style."""
+    lines: list[str] = [
+        f"  {table_name}: {len(routes)} destinations",
+        "",
+        _ADJ_TABLE_HDR,
+    ]
+    for r in routes:
+        nexthop = r["nexthop"]
+        if not nexthop or nexthop in ("0.0.0.0", "::"):
+            nexthop = "Self"
+        med_s = str(r["med"])        if r["med"]        is not None else ""
+        lp_s  = str(r["local_pref"]) if r["local_pref"] is not None else ""
+        lines.append(
+            f"  {r['prefix']:<24}{nexthop:<15}{med_s:>6}  {lp_s:>7}  {r['as_path']}"
+        )
+    return "\n".join(lines)
+
+
+def show_route_adj_protocol(
+    args: list[str],
+    frr: Optional["FRRClient"],
+    advertised: bool,
+) -> str:
+    """Implement show route advertising-protocol/receive-protocol bgp <ip>."""
+    verb = "advertising-protocol" if advertised else "receive-protocol"
+
+    if frr is None:
+        return "BGP is not running"
+
+    if len(args) < 2:
+        return f"error: usage: show route {verb} bgp <neighbor-ip>"
+    if args[0].lower() != "bgp":
+        return f"error: expected 'bgp' after '{verb}', got '{args[0]}'"
+
+    neighbor_ip = args[1]
+    try:
+        ipaddress.ip_address(neighbor_ip)
+    except ValueError:
+        return f"error: invalid IP address: '{neighbor_ip}'"
+
+    route_key  = "advertisedRoutes" if advertised else "receivedRoutes"
+    cmd_suffix = "advertised-routes json" if advertised else "received-routes json"
+
+    data4, err4 = _frr_adj_fetch(frr, f"show ip bgp neighbors {neighbor_ip} {cmd_suffix}")
+    data6, err6 = _frr_adj_fetch(frr, f"show bgp ipv6 unicast neighbors {neighbor_ip} {cmd_suffix}")
+
+    if err4 == "neighbor_not_found" and err6 == "neighbor_not_found":
+        return f"BGP neighbor {neighbor_ip!r} not found."
+
+    parts: list[str] = []
+
+    routes4 = _parse_bgp_adj_json(data4, route_key)
+    if routes4:
+        parts.append(_render_adj_table(routes4, "inet.0"))
+
+    routes6 = _parse_bgp_adj_json(data6, route_key)
+    if routes6:
+        parts.append(_render_adj_table(routes6, "inet6.0"))
+
+    if not parts:
+        verb_label = "advertised to" if advertised else "received from"
+        return f"No routes {verb_label} {neighbor_ip}."
+
+    return "\n\n".join(parts)
+
+
 # ── Route table builder ──────────────────────────────────────────────────────
 
 def _merge(frr_routes: list[Route], kernel_routes: list[Route]) -> list[Route]:
@@ -697,6 +832,11 @@ def show_route(
         frr:      FRRClient instance (or None to use kernel data only)
         alias_fn: Optional callable translating kernel iface names to display names
     """
+    if args and args[0].lower() == "advertising-protocol":
+        return show_route_adj_protocol(args[1:], frr, advertised=True)
+    if args and args[0].lower() == "receive-protocol":
+        return show_route_adj_protocol(args[1:], frr, advertised=False)
+
     detail       = False
     terse        = False
     hidden_only  = False

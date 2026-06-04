@@ -214,6 +214,15 @@ def build_config_tree() -> ConfigNode:
         }),
     })
 
+    _redist_protocols = {
+        "connected": _p("Redistribute connected routes"),
+        "static":    _p("Redistribute static routes"),
+        "kernel":    _p("Redistribute kernel routes"),
+        "isis":      _p("Redistribute IS-IS routes"),
+        "ospf":      _p("Redistribute OSPF routes"),
+        "rip":       _p("Redistribute RIP routes"),
+    }
+
     protocols_node = _n("Routing protocols", {
         "isis": _n("IS-IS protocol", {
             "interface": _d("IS-IS interface", "<interface-name>", isis_iface_inner),
@@ -224,6 +233,14 @@ def build_config_tree() -> ConfigNode:
         }),
         "bgp": _n("BGP protocol", {
             "group": _d("BGP peer group", "<group-name>", bgp_group_inner),
+            "family": _n("Address family", {
+                "inet": _n("IPv4 unicast address family", {
+                    "redistribute": _n("Redistribute routes into BGP", _redist_protocols),
+                }),
+                "inet6": _n("IPv6 unicast address family", {
+                    "redistribute": _n("Redistribute routes into BGP", _redist_protocols),
+                }),
+            }),
         }),
     })
 
@@ -250,8 +267,15 @@ def build_config_tree() -> ConfigNode:
         }),
     })
 
+    ps_then_final = _n("Final (unnamed) term actions", {
+        "accept": _p("Accept the route"),
+        "reject": _p("Reject the route"),
+        "next-policy": _p("Pass to the next policy in the chain"),
+    })
+
     ps_inner = _n("Policy statement", {
         "term": _d("Policy term", "<term-name>", ps_term_inner),
+        "then": ps_then_final,
     })
 
     policy_options_node = _n("Policy options", {
@@ -590,11 +614,13 @@ _SHOW_OPER_ARGS = {
 }
 
 _ROUTE_SUBCMDS: dict[str, str] = {
-    "detail":   "Show detailed route information",
-    "terse":    "Show one-line route entries",
-    "hidden":   "Show routes not installed in FIB",
-    "protocol": "Filter by routing protocol",
-    "table":    "Show routes from specific routing table",
+    "detail":                "Show detailed route information",
+    "terse":                 "Show one-line route entries",
+    "hidden":                "Show routes not installed in FIB",
+    "protocol":              "Filter by routing protocol",
+    "table":                 "Show routes from specific routing table",
+    "advertising-protocol":  "Show routes advertised to a BGP neighbor",
+    "receive-protocol":      "Show routes received from a BGP neighbor",
 }
 
 _ROUTE_PROTOCOLS: list[str] = ["bgp", "direct", "isis", "local", "ospf", "static"]
@@ -1002,6 +1028,27 @@ class NOSCompleter(Completer):
                 # Inside 'show route <sub> ...'
                 last_kw = route_rest[-2].lower() if len(route_rest) >= 2 else ""
                 cur_kw  = route_rest[-1].lower() if route_rest else ""
+
+                # advertising-protocol / receive-protocol bgp <neighbor-ip>
+                _ADJ_PROTOCOL_KWS = ("advertising-protocol", "receive-protocol")
+                if route_rest and route_rest[0].lower() in _ADJ_PROTOCOL_KWS:
+                    adj_rest   = route_rest[1:]
+                    adj_prefix = "" if completing_new else (adj_rest[-1] if adj_rest else "")
+                    if not adj_rest or (len(adj_rest) == 1 and not completing_new):
+                        if "bgp".startswith(adj_prefix):
+                            yield Completion("bgp", -len(adj_prefix), display_meta="BGP protocol")
+                    elif adj_rest[0].lower() == "bgp":
+                        bgp_rest   = adj_rest[1:]
+                        bgp_prefix = "" if completing_new else (bgp_rest[-1] if bgp_rest else "")
+                        if not bgp_rest or (len(bgp_rest) == 1 and not completing_new):
+                            if not _looks_like_real_value(bgp_prefix):
+                                yield Completion(
+                                    "<neighbor-ip>", -len(bgp_prefix),
+                                    display_meta="BGP neighbor IP address",
+                                )
+                    if completing_new:
+                        yield Completion("|", display_meta="Filter output")
+                    return
 
                 if completing_new and cur_kw == "protocol":
                     for proto in _ROUTE_PROTOCOLS:

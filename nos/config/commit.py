@@ -100,6 +100,30 @@ class CommitEngine:
             except Exception as exc:
                 logger.error("ConfigApplier failed after commit: %s", exc)
 
+    def _apply_rollback_immediately(self, n: int) -> None:
+        """Internal: Apply rollback directly to running (for auto-rollback only).
+
+        Loads checkpoint into both candidate and running, applies to system.
+        Used only by auto-rollback timer; manual rollback() does not apply.
+        """
+        if not (0 <= n < _MAX_ROLLBACKS):
+            raise RollbackError(f"Rollback index must be 0–{_MAX_ROLLBACKS - 1}, got {n}")
+        path = self._rollback_path(n)
+        if not path.exists():
+            raise RollbackError(f"Checkpoint rollback.{n} does not exist")
+        old_config = copy.deepcopy(self.store.running)
+        with open(path) as fh:
+            config = json.load(fh)
+        self.store.running = copy.deepcopy(config)
+        self.store.candidate = copy.deepcopy(config)
+        self.store.save_running()
+        self.store.save_candidate()
+        if self._applier is not None:
+            try:
+                self._applier.apply(old_config, self.store.running)
+            except Exception as exc:
+                logger.error("ConfigApplier failed after auto-rollback: %s", exc)
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -116,8 +140,10 @@ class CommitEngine:
         logger.info("Commit successful")
 
     def rollback(self, n: int) -> None:
-        """Revert running and candidate to checkpoint rollback.N.
+        """Load checkpoint rollback.N into candidate config only.
 
+        Running config and system state are unchanged. User must call commit()
+        to apply the loaded candidate config.
         Raises RollbackError if the checkpoint does not exist.
         """
         if not (0 <= n < _MAX_ROLLBACKS):
@@ -125,19 +151,11 @@ class CommitEngine:
         path = self._rollback_path(n)
         if not path.exists():
             raise RollbackError(f"Checkpoint rollback.{n} does not exist")
-        old_config = copy.deepcopy(self.store.running)
         with open(path) as fh:
             config = json.load(fh)
-        self.store.running = copy.deepcopy(config)
         self.store.candidate = copy.deepcopy(config)
-        self.store.save_running()
         self.store.save_candidate()
         logger.info("Rolled back to checkpoint %d", n)
-        if self._applier is not None:
-            try:
-                self._applier.apply(old_config, self.store.running)
-            except Exception as exc:
-                logger.error("ConfigApplier failed after rollback: %s", exc)
 
     def commit_confirmed(self, minutes: int) -> None:
         """Commit and schedule an automatic rollback after *minutes* minutes.
@@ -191,7 +209,7 @@ class CommitEngine:
             self._confirmed_timer = None
         logger.warning("commit confirmed timeout — performing automatic rollback 0")
         try:
-            self.rollback(0)
+            self._apply_rollback_immediately(0)
         except Exception as exc:
             logger.error("Auto-rollback failed: %s", exc)
 

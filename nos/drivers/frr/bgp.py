@@ -30,8 +30,30 @@ class BGPGenerator:
         if router_id:
             lines.append(f" bgp router-id {router_id}")
 
+        # Collect BGP-instance-level redistribute (global, not per peer-group).
+        fi = bgp_cfg.get("family_inet") or {}
+        inet_redist = [p for p, v in (fi.get("redistribute") or {}).items() if v]
+        fi6 = bgp_cfg.get("family_inet6") or {}
+        inet6_redist = [p for p, v in (fi6.get("redistribute") or {}).items() if v]
+
+        # Emit redistribute lines exactly once — in the first group that renders
+        # each address-family block.
+        inet_redist_emitted = False
+        inet6_redist_emitted = False
+
         for group_name, group in (bgp_cfg.get("group") or {}).items():
-            lines.extend(self._render_group(group_name, group, asn))
+            will_emit_inet = bool(group.get("family_inet", {})) or not group.get("family_inet6")
+            will_emit_inet6 = bool(group.get("family_inet6"))
+
+            gr_inet_redist = inet_redist if (will_emit_inet and not inet_redist_emitted) else []
+            gr_inet6_redist = inet6_redist if (will_emit_inet6 and not inet6_redist_emitted) else []
+
+            if will_emit_inet:
+                inet_redist_emitted = True
+            if will_emit_inet6:
+                inet6_redist_emitted = True
+
+            lines.extend(self._render_group(group_name, group, asn, gr_inet_redist, gr_inet6_redist))
 
         lines.append("!")
         return lines
@@ -45,6 +67,8 @@ class BGPGenerator:
         name: str,
         group: Dict[str, Any],
         local_asn: int,
+        inet_redist: Optional[List[str]] = None,
+        inet6_redist: Optional[List[str]] = None,
     ) -> List[str]:
         lines: List[str] = []
 
@@ -82,6 +106,8 @@ class BGPGenerator:
         if group.get("family_inet", {}) or not group.get("family_inet6"):
             lines.append("  !")
             lines.append(" address-family ipv4 unicast")
+            for proto in (inet_redist or []):
+                lines.append(f"  redistribute {proto}")
             lines.append(f"  neighbor {name} activate")
             export = group.get("export")
             if export:
@@ -94,6 +120,8 @@ class BGPGenerator:
         if group.get("family_inet6"):
             lines.append("  !")
             lines.append(" address-family ipv6 unicast")
+            for proto in (inet6_redist or []):
+                lines.append(f"  redistribute {proto}")
             lines.append(f"  neighbor {name} activate")
             lines.append(" exit-address-family")
 

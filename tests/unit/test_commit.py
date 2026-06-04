@@ -101,11 +101,13 @@ def test_commit_keeps_candidate_unchanged_after_commit(engine):
 # rollback()
 # ---------------------------------------------------------------------------
 
-def test_rollback_restores_running(engine):
+def test_rollback_loads_candidate_only(engine):
     engine._rollback_dir.mkdir(parents=True, exist_ok=True)
     engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
+    original_running = copy.deepcopy(engine.store.running)
     engine.rollback(0)
-    assert engine.store.running["system"]["host_name"] == "old"
+    assert engine.store.candidate["system"]["host_name"] == "old"
+    assert engine.store.running == original_running
 
 
 def test_rollback_restores_candidate(engine):
@@ -115,12 +117,13 @@ def test_rollback_restores_candidate(engine):
     assert engine.store.candidate["system"]["host_name"] == "two-back"
 
 
-def test_rollback_persists_running_to_disk(engine):
+def test_rollback_does_not_modify_running(engine):
     engine._rollback_dir.mkdir(parents=True, exist_ok=True)
     engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
+    original_running = copy.deepcopy(engine.store.running)
     engine.rollback(0)
     data = json.loads((engine.base_dir / "config" / "running.json").read_text())
-    assert data["system"]["host_name"] == "old"
+    assert data == original_running
 
 
 def test_rollback_raises_if_checkpoint_missing(engine):
@@ -135,11 +138,17 @@ def test_rollback_raises_for_out_of_range_index(engine):
         engine.rollback(-1)
 
 
-def test_commit_then_rollback_restores_original(engine):
+def test_rollback_then_commit_applies_checkpoint(engine):
     original = copy.deepcopy(engine.store.running)
     engine.store.update_candidate(["system", "host_name"], "r2")
     engine.commit()
+    # running is now r2, candidate is r2
+    # rollback loads the original checkpoint (r1) into candidate only
     engine.rollback(0)
+    assert engine.store.running == {"system": {"host_name": "r2"}}
+    assert engine.store.candidate == original
+    # now commit applies the candidate
+    engine.commit()
     assert engine.store.running == original
 
 
@@ -261,8 +270,10 @@ def test_commit_check_phase2_not_called_when_phase1_fails(engine):
 def test_rollback_index_49_valid(engine):
     engine._rollback_dir.mkdir(parents=True, exist_ok=True)
     engine._rollback_path(49).write_text('{"system": {"host_name": "ancient"}}')
+    original_running = copy.deepcopy(engine.store.running)
     engine.rollback(49)
-    assert engine.store.running["system"]["host_name"] == "ancient"
+    assert engine.store.candidate["system"]["host_name"] == "ancient"
+    assert engine.store.running == original_running
 
 
 def test_max_50_checkpoints_kept(engine):
@@ -326,25 +337,27 @@ def test_applier_failure_does_not_raise_after_commit(tmp_store):
     assert engine.store.running["system"]["host_name"] == "r2"
 
 
-def test_applier_called_after_rollback(tmp_store):
+def test_applier_not_called_after_rollback(tmp_store):
+    engine, applier = _engine_with_applier(tmp_store)
+    engine._rollback_dir.mkdir(parents=True, exist_ok=True)
+    engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
+    engine.rollback(0)
+    applier.apply.assert_not_called()
+
+
+def test_applier_called_when_commit_after_rollback(tmp_store):
     engine, applier = _engine_with_applier(tmp_store)
     engine._rollback_dir.mkdir(parents=True, exist_ok=True)
     engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
     old_running = copy.deepcopy(engine.store.running)
     engine.rollback(0)
+    applier.apply.assert_not_called()
+    # now commit applies the loaded candidate and calls applier
+    engine.commit()
     applier.apply.assert_called_once()
     old_arg, new_arg = applier.apply.call_args[0]
     assert old_arg == old_running
     assert new_arg["system"]["host_name"] == "old"
-
-
-def test_applier_failure_does_not_raise_after_rollback(tmp_store):
-    engine, applier = _engine_with_applier(tmp_store)
-    applier.apply.side_effect = Exception("pfe gone")
-    engine._rollback_dir.mkdir(parents=True, exist_ok=True)
-    engine._rollback_path(0).write_text('{"system": {"host_name": "old"}}')
-    engine.rollback(0)  # must not raise
-    assert engine.store.running["system"]["host_name"] == "old"
 
 
 def test_applier_not_called_when_rollback_checkpoint_missing(tmp_store):

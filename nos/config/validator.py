@@ -7,6 +7,7 @@ from typing import Optional
 import pydantic
 
 from nos.config.schema import BgpTypeEnum, NOSConfig
+from nos.config.serializer import _j2k
 
 _LOOPBACK_DUMMY_RE = re.compile(r"^lo\d+")
 
@@ -186,15 +187,20 @@ class ConfigValidator:
             return
         defined = set()
         if config.policy_options:
-            defined = set(config.policy_options.policy_statement.keys())
+            # Normalize policy names to lowercase underscores for comparison (handle both
+            # CLI-defined names with underscores and directly-added names with hyphens)
+            defined = set(_j2k(name).lower() for name in config.policy_options.policy_statement.keys())
 
         for group_name, group in config.protocols.bgp.group.items():
             for attr, label in ((group.export, "export"), (group.import_policy, "import_policy")):
-                if attr is not None and attr not in defined:
-                    result.add_error(
-                        f"protocols.bgp.group.{group_name}.{label}",
-                        f"Policy {attr!r} is not defined in policy_options.policy_statement",
-                    )
+                if attr is not None:
+                    # Normalize policy reference: convert to lowercase underscores for matching
+                    normalized_attr = _j2k(attr).lower()
+                    if normalized_attr not in defined:
+                        result.add_error(
+                            f"protocols.bgp.group.{group_name}.{label}",
+                            f"Policy {attr!r} is not defined in policy_options.policy_statement",
+                        )
 
     def _check_routing_instance_interface_references(
         self, config: NOSConfig, result: ValidationResult
