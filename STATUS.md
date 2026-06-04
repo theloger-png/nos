@@ -34,7 +34,7 @@
 - `show ethernet-switching statistics` — per-interface packet counters
 - `show ethernet-switching flood` — per-VLAN flood group membership
 - `show configuration` — tree format + `| display set` pipe
-- `show route` (stub)
+- `show route` - JunOS format, IPv4/IPv6, brief/detail/terse/hidden, protocol filter, prefix filter
 - `show bgp` (stub)
 - `show isis` (stub)
 
@@ -91,4 +91,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1132 passing, 0 failing — 2026-06-04
+- Total: 1250 passing, 0 failing - 2026-06-04
