@@ -50,7 +50,7 @@ def test_render_interface_basic(gen):
 def test_render_interface_point_to_point(gen):
     lines = gen.render_interface("eth0", {"point_to_point": True})
     text = "\n".join(lines)
-    assert "isis point-to-point" in text
+    assert "isis network point-to-point" in text
 
 
 def test_render_interface_no_ptp_when_false(gen):

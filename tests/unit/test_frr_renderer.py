@@ -52,7 +52,7 @@ def test_render_isis_interfaces(renderer):
     }
     out = renderer.render(config)
     assert "interface eth0" in out
-    assert "isis point-to-point" in out
+    assert "isis network point-to-point" in out
     assert "interface lo0" in out
 
 

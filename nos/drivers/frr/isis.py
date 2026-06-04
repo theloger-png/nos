@@ -38,7 +38,7 @@ class ISISGenerator:
         if _LOOPBACK_RE.match(iface_name) or iface_cfg.get("passive"):
             lines.append(" isis passive")
         if iface_cfg.get("point_to_point"):
-            lines.append(" isis point-to-point")
+            lines.append(" isis network point-to-point")
         hi = iface_cfg.get("hello_interval")
         if hi is not None:
             lines.append(f" isis hello-interval {hi}")

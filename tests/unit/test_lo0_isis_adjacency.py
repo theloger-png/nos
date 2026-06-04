@@ -36,7 +36,7 @@ def test_explicit_passive_flag_on_non_loopback(gen):
 def test_lo0_no_point_to_point_by_default(gen):
     lines = gen.render_interface("lo0", {})
     text = "\n".join(lines)
-    assert "isis point-to-point" not in text
+    assert "isis network point-to-point" not in text
 
 
 def test_lo0_renders_ip_router_isis(gen):
