@@ -71,10 +71,10 @@ class CommitEngine:
             src = self._rollback_path(n)
             dst = self._rollback_path(n + 1)
             if src.exists():
-                shutil.copy2(src, dst)
+                shutil.copy(src, dst)
         running_path = self.store._running_path
         if running_path.exists():
-            shutil.copy2(running_path, self._rollback_path(0))
+            shutil.copy(running_path, self._rollback_path(0))
         else:
             # Write empty config as checkpoint so rollback.0 always exists post-commit
             with open(self._rollback_path(0), "w") as fh:
