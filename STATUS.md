@@ -19,6 +19,7 @@
 - JunOS-style `ping` and `traceroute` options
 - Space key: JunOS-style — completes unique prefix, shows options when ambiguous
 - Ctrl+X: clears input line (optimized: cancel_completion + reset without history append)
+- Interface aliasing: `set system interface-rename` maps physical interfaces to et0/et1 everywhere in nos-cli
 
 ### Show Commands
 - `show interfaces` — live data via pyroute2, IPv6 addresses displayed
@@ -72,7 +73,6 @@
 
 ## Known Limitations / TODO
 - Production mode: NOS full control of interfaces (disable netplan) — not yet
-- Interface aliases: rename `ens34` → `et0`, `et1`, etc.
 
 ## Phase 2 — Planned Features
 - DHCP server: per-interface/IRB config (range, dns-server, lease-time, gateway auto-detected from IRB address)
@@ -91,4 +91,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1098 passing, 0 failing — 2026-06-04
+- Total: 1132 passing, 0 failing — 2026-06-04
