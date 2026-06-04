@@ -12,6 +12,8 @@ Command variants:
   show route <prefix>
   show route <prefix> detail
   show route protocol [bgp|isis|ospf|static|direct]
+  show route table [inet.0|inet6.0]
+  show route table [inet.0|inet6.0] detail
 """
 from __future__ import annotations
 
@@ -700,6 +702,7 @@ def show_route(
     hidden_only  = False
     prefix_filter: Optional[str] = None
     proto_filter:  Optional[str] = None
+    table_filter: Optional[int] = None  # 4 for inet.0, 6 for inet6.0
 
     i = 0
     while i < len(args):
@@ -710,6 +713,17 @@ def show_route(
             terse = True
         elif tok == "hidden":
             hidden_only = True
+        elif tok == "table":
+            if i + 1 >= len(args):
+                return "error: 'table' requires a table name"
+            table_name = args[i + 1].lower()
+            if table_name == "inet.0":
+                table_filter = 4
+            elif table_name == "inet6.0":
+                table_filter = 6
+            else:
+                return f"error: unknown routing table '{args[i + 1]}'"
+            i += 1
         elif tok == "protocol":
             if i + 1 >= len(args):
                 return "error: 'protocol' requires a protocol name"
@@ -728,6 +742,13 @@ def show_route(
 
     # Build the full route table (active + hidden)
     all4, all6 = _build_route_table(frr, alias_fn, detail=detail)
+
+    # Apply table filter first
+    if table_filter is not None:
+        if table_filter == 4:
+            all6 = []
+        elif table_filter == 6:
+            all4 = []
 
     # Apply prefix filter to both display and stat sets
     if prefix_filter:

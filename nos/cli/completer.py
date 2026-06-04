@@ -594,6 +594,7 @@ _ROUTE_SUBCMDS: dict[str, str] = {
     "terse":    "Show one-line route entries",
     "hidden":   "Show routes not installed in FIB",
     "protocol": "Filter by routing protocol",
+    "table":    "Show routes from specific routing table",
 }
 
 _ROUTE_PROTOCOLS: list[str] = ["bgp", "direct", "isis", "local", "ospf", "static"]
@@ -973,7 +974,7 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # "show route [detail|terse|hidden|protocol <proto>|<prefix>]"
+        # "show route [detail|terse|hidden|protocol <proto>|table <table>|<prefix>]"
         if resolved_sub == "route":
             route_rest   = rest[1:]
             route_prefix = "" if completing_new else (route_rest[-1] if route_rest else "")
@@ -996,22 +997,30 @@ class NOSCompleter(Completer):
                 if completing_new and cur_kw == "protocol":
                     for proto in _ROUTE_PROTOCOLS:
                         yield Completion(proto, display_meta=f"Show {proto} routes")
+                elif completing_new and cur_kw == "table":
+                    yield Completion("inet.0", display_meta="IPv4 routing table")
+                    yield Completion("inet6.0", display_meta="IPv6 routing table")
                 elif not completing_new and last_kw == "protocol":
                     for proto in _ROUTE_PROTOCOLS:
                         if proto.startswith(route_prefix):
                             yield Completion(proto, -len(route_prefix),
                                              display_meta=f"Show {proto} routes")
+                elif not completing_new and last_kw == "table":
+                    for table_name in ("inet.0", "inet6.0"):
+                        if table_name.startswith(route_prefix):
+                            yield Completion(table_name, -len(route_prefix),
+                                             display_meta="Routing table")
                 elif not completing_new:
                     # In the middle of typing a subcommand/prefix after prefix/subcommand
                     for kw, meta in _ROUTE_SUBCMDS.items():
                         if kw.startswith(route_prefix):
                             yield Completion(kw, -len(route_prefix), display_meta=meta)
                 elif completing_new:
-                    # After a word boundary offer subcommands; include "protocol"
+                    # After a word boundary offer subcommands; include "protocol" and "table"
                     # only when the preceding token was an IP prefix, not another subcmd.
-                    include_protocol = _is_ip_prefix_token(cur_kw)
+                    include_with_prefix = _is_ip_prefix_token(cur_kw)
                     for kw, meta in _ROUTE_SUBCMDS.items():
-                        if include_protocol or kw != "protocol":
+                        if include_with_prefix or kw not in ("protocol", "table"):
                             yield Completion(kw, display_meta=meta)
 
             if completing_new:

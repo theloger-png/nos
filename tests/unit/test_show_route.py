@@ -1075,6 +1075,111 @@ class TestIPv4IPv6Separation:
 
 
 # ============================================================================
+# Table filter (show route table [inet.0|inet6.0])
+# ============================================================================
+
+class TestShowRouteTable:
+    def _frr_both_tables(self) -> tuple[dict, dict]:
+        ipv4 = {
+            "10.0.0.0/24": [{
+                "protocol": "connected", "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "00:00:00",
+                "nexthops": [{"interfaceName": "eth0", "active": True}],
+            }],
+            "0.0.0.0/0": [{
+                "protocol": "static", "selected": True, "destSelected": True,
+                "installed": True, "distance": 5, "metric": 0, "uptime": "10:00:00",
+                "nexthops": [{"ip": "10.0.0.1", "interfaceName": "eth0", "active": True}],
+            }],
+        }
+        ipv6 = {
+            "::1/128": [{
+                "protocol": "connected", "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "00:00:00",
+                "nexthops": [{"interfaceName": "lo", "active": True}],
+            }],
+            "2001:db8::/32": [{
+                "protocol": "static", "selected": True, "destSelected": True,
+                "installed": True, "distance": 5, "metric": 0, "uptime": "10:00:00",
+                "nexthops": [{"ip": "2001:db8::1", "interfaceName": "eth0", "active": True}],
+            }],
+        }
+        return ipv4, ipv6
+
+    def test_table_inet0_shows_only_ipv4(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet.0"], frr=frr)
+        assert "inet.0:" in out
+        assert "inet6.0:" not in out
+        assert "10.0.0.0/24" in out
+        assert "0.0.0.0/0" in out
+        assert "::1/128" not in out
+        assert "2001:db8::/32" not in out
+
+    def test_table_inet6_0_shows_only_ipv6(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet6.0"], frr=frr)
+        assert "inet.0:" not in out
+        assert "inet6.0:" in out
+        assert "10.0.0.0/24" not in out
+        assert "0.0.0.0/0" not in out
+        assert "::1/128" in out
+        assert "2001:db8::/32" in out
+
+    def test_table_inet0_detail(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet.0", "detail"], frr=frr)
+        assert "inet.0:" in out
+        assert "inet6.0:" not in out
+        assert "10.0.0.0/24" in out
+        assert "Preference:" in out
+        assert "::1/128" not in out
+
+    def test_table_inet6_0_detail(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet6.0", "detail"], frr=frr)
+        assert "inet.0:" not in out
+        assert "inet6.0:" in out
+        assert "2001:db8::/32" in out
+        assert "Preference:" in out
+        assert "10.0.0.0/24" not in out
+
+    def test_table_inet0_terse(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet.0", "terse"], frr=frr)
+        assert "inet.0:" in out
+        assert "inet6.0:" not in out
+        lines = [l for l in out.splitlines() if "10.0.0.0/24" in l]
+        assert lines
+        assert "via eth0" in lines[0]
+
+    def test_table_unknown_returns_error(self):
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "unknown.0"], frr=frr)
+        assert "error" in out.lower()
+        assert "unknown routing table" in out.lower()
+
+    def test_table_missing_name_returns_error(self):
+        frr = _make_frr({}, {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table"], frr=frr)
+        assert "error" in out.lower()
+        assert "requires a table name" in out.lower()
+
+
+# ============================================================================
 # Interface alias translation
 # ============================================================================
 
@@ -1362,6 +1467,59 @@ class TestRouteCompletion:
         kws = _complete_oper("show route 0.0.0.0/0 protocol b")
         assert "bgp" in kws
         assert "isis" not in kws
+
+    # ── Table filter completions ────────────────────────────────────────────
+
+    def test_show_route_space_offers_table(self):
+        kws = _complete_oper("show route ")
+        assert "table" in kws
+
+    def test_show_route_table_space_offers_inet_tables(self):
+        kws = _complete_oper("show route table ")
+        assert "inet.0" in kws
+        assert "inet6.0" in kws
+
+    def test_show_route_table_inet_partial(self):
+        kws = _complete_oper("show route table inet")
+        assert "inet.0" in kws
+        assert "inet6.0" in kws
+
+    def test_show_route_table_inet6_partial(self):
+        kws = _complete_oper("show route table inet6")
+        assert "inet6.0" in kws
+        assert "inet.0" not in kws
+
+    def test_show_route_table_inet0_space_offers_detail(self):
+        kws = _complete_oper("show route table inet.0 ")
+        assert "detail" in kws
+        assert "terse" in kws
+        assert "hidden" in kws
+        assert "protocol" not in kws
+        assert "table" not in kws
+
+    def test_show_route_table_inet6_0_space_offers_detail(self):
+        kws = _complete_oper("show route table inet6.0 ")
+        assert "detail" in kws
+        assert "terse" in kws
+        assert "hidden" in kws
+
+    def test_show_route_table_inet0_space_offers_pipe(self):
+        kws = _complete_oper("show route table inet.0 ")
+        assert "|" in kws
+
+    def test_show_route_table_inet0_detail_space_offers_pipe(self):
+        kws = _complete_oper("show route table inet.0 detail ")
+        assert "|" in kws
+
+    def test_show_route_table_inet0_det_partial(self):
+        kws = _complete_oper("show route table inet.0 det")
+        assert "detail" in kws
+        assert "terse" not in kws
+
+    def test_show_route_table_inet6_0_ter_partial(self):
+        kws = _complete_oper("show route table inet6.0 ter")
+        assert "terse" in kws
+        assert "detail" not in kws
 
     def test_detail_space_does_not_offer_protocol(self):
         kws = _complete_oper("show route detail ")
