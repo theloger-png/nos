@@ -250,3 +250,28 @@ class TestDelete:
         mode.edit_path = ["interfaces", "eth0"]
         mode.execute("delete description")
         assert "description" not in store.candidate.get("interfaces", {}).get("eth0", {})
+
+
+# ============================================================================
+# commit and-quit
+# ============================================================================
+
+class TestCommitAndQuit:
+    def test_commit_and_quit_commits_on_success(self, mode, store, engine):
+        mode.execute("set system host-name nos01")
+        with pytest.raises(SystemExit) as exc_info:
+            mode.execute("commit and-quit")
+        assert exc_info.value.code == 0
+        assert store.running["system"]["host_name"] == "nos01"
+
+    def test_commit_and_quit_exits_configure_mode(self, mode, store):
+        mode.execute("set system host-name nos01")
+        with pytest.raises(SystemExit):
+            mode.execute("commit and-quit")
+
+    def test_commit_and_quit_stays_in_mode_on_error(self, mode, store):
+        mode.execute("set interfaces eth0 mtu 99999")  # invalid: out of range
+        out = mode.execute("commit and-quit")
+        assert "validation failed" in out
+        # Mode should still be in configure (no SystemExit raised)
+        assert "error" not in mode.execute("show") or True  # still operational

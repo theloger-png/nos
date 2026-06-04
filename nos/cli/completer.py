@@ -1115,7 +1115,8 @@ class NOSCompleter(Completer):
     ) -> Generator[Completion, None, None]:
         prefix = "" if completing_new else (rest[-1] if rest else "")
         if not rest or (len(rest) == 1 and not completing_new):
-            for kw, desc in [("confirmed", "Commit with auto-rollback timer"),
+            for kw, desc in [("and-quit", "Commit and exit configure mode"),
+                              ("confirmed", "Commit with auto-rollback timer"),
                               ("check", "Validate without applying")]:
                 if kw.startswith(prefix):
                     yield Completion(kw, -len(prefix), display_meta=desc)

@@ -20,7 +20,7 @@ _CONFIGURE_CMDS: list[str] = [
     "commit", "delete", "discard", "edit", "exit",
     "rollback", "run", "set", "show", "top", "up",
 ]
-_COMMIT_SUBCMDS: list[str] = ["check", "confirmed"]
+_COMMIT_SUBCMDS: list[str] = ["and-quit", "check", "confirmed"]
 
 
 def resolve_prefix(token: str, candidates: list[str]) -> tuple[str | None, str | None]:
@@ -61,6 +61,7 @@ class CommandType(Enum):
     UP = "up"
     TOP = "top"
     COMMIT = "commit"
+    COMMIT_AND_QUIT = "commit_and_quit"
     COMMIT_CONFIRMED = "commit_confirmed"
     COMMIT_CHECK = "commit_check"
     ROLLBACK = "rollback"
@@ -220,6 +221,8 @@ class CommandParser:
                 raw=raw,
             )
         sub = resolved
+        if sub == "and-quit":
+            return ParseResult(command=CommandType.COMMIT_AND_QUIT, raw=raw)
         if sub == "check":
             return ParseResult(command=CommandType.COMMIT_CHECK, raw=raw)
         if sub == "confirmed":

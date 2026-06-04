@@ -253,6 +253,10 @@ class TestConfigureModeCommit:
         assert r.command == CommandType.UNKNOWN
         assert r.is_error
 
+    def test_commit_and_quit(self, parser):
+        r = parser.parse("commit and-quit", CLIMode.CONFIGURE)
+        assert r.command == CommandType.COMMIT_AND_QUIT
+
     def test_commit_unknown_subcommand(self, parser):
         r = parser.parse("commit save", CLIMode.CONFIGURE)
         assert r.command == CommandType.UNKNOWN

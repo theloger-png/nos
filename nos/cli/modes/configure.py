@@ -191,6 +191,8 @@ class ConfigureMode:
                 return self._handle_show(result.args, result.pipe)
             case CommandType.COMMIT:
                 return self._handle_commit()
+            case CommandType.COMMIT_AND_QUIT:
+                return self._handle_commit_and_quit()
             case CommandType.COMMIT_CHECK:
                 return self._handle_commit_check()
             case CommandType.COMMIT_CONFIRMED:
@@ -359,6 +361,20 @@ class ConfigureMode:
             for err in exc.errors:
                 lines.append(f"  {err}")
             return "\n".join(lines)
+        except Exception as exc:
+            return f"commit error: {exc}"
+
+    def _handle_commit_and_quit(self) -> str:
+        try:
+            self.commit_engine.commit()
+            raise SystemExit(0)
+        except CommitError as exc:
+            lines = ["commit validation failed:"]
+            for err in exc.errors:
+                lines.append(f"  {err}")
+            return "\n".join(lines)
+        except SystemExit:
+            raise
         except Exception as exc:
             return f"commit error: {exc}"
 
