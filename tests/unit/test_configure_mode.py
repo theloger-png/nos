@@ -275,3 +275,79 @@ class TestCommitAndQuit:
         assert "validation failed" in out
         # Mode should still be in configure (no SystemExit raised)
         assert "error" not in mode.execute("show") or True  # still operational
+
+
+# ============================================================================
+# top / up — navigation in edit path
+# ============================================================================
+
+class TestTopUpNavigation:
+    def test_top_returns_to_root_from_nested_path(self, mode, store):
+        mode.execute("edit interfaces eth0")
+        assert mode.edit_path == ["interfaces", "eth0"]
+        mode.execute("top")
+        assert mode.edit_path == []
+
+    def test_top_from_root_stays_at_root(self, mode, store):
+        mode.edit_path = []
+        mode.execute("top")
+        assert mode.edit_path == []
+
+    def test_top_from_three_levels_deep(self, mode, store):
+        mode.edit_path = ["protocols", "bgp", "group"]
+        mode.execute("top")
+        assert mode.edit_path == []
+
+    def test_up_goes_one_level_up_default(self, mode, store):
+        mode.edit_path = ["interfaces", "eth0"]
+        mode.execute("up")
+        assert mode.edit_path == ["interfaces"]
+
+    def test_up_from_root_stays_at_root(self, mode, store):
+        mode.edit_path = []
+        mode.execute("up")
+        assert mode.edit_path == []
+
+    def test_up_one_level_with_explicit_count(self, mode, store):
+        mode.edit_path = ["interfaces", "eth0", "family", "inet"]
+        mode.execute("up 1")
+        assert mode.edit_path == ["interfaces", "eth0", "family"]
+
+    def test_up_multiple_levels(self, mode, store):
+        mode.edit_path = ["interfaces", "eth0", "family", "inet"]
+        mode.execute("up 3")
+        assert mode.edit_path == ["interfaces"]
+
+    def test_up_more_levels_than_depth(self, mode, store):
+        mode.edit_path = ["interfaces", "eth0"]
+        mode.execute("up 5")
+        assert mode.edit_path == []
+
+    def test_up_all_levels_returns_to_root(self, mode, store):
+        mode.edit_path = ["interfaces", "eth0", "family", "inet"]
+        mode.execute("up 4")
+        assert mode.edit_path == []
+
+    def test_edit_and_top_and_edit_again(self, mode, store):
+        """Test edit, top, then edit to another branch."""
+        mode.execute("edit interfaces eth0")
+        assert mode.edit_path == ["interfaces", "eth0"]
+        mode.execute("top")
+        assert mode.edit_path == []
+        mode.execute("edit vlans vlan100")
+        assert mode.edit_path == ["vlans", "vlan100"]
+
+    def test_set_relative_after_up(self, mode, store):
+        """Test that set works relative to path after up."""
+        mode.execute("edit interfaces eth0 family inet")
+        mode.execute("up 2")
+        mode.execute("set description internet")
+        assert store.candidate["interfaces"]["eth0"]["description"] == "internet"
+
+    def test_show_after_up(self, mode, store):
+        """Test that show reflects correct path after up."""
+        mode.execute("set interfaces eth0 description internet")
+        mode.execute("edit interfaces eth0")
+        mode.execute("up")
+        out = mode.execute("show")
+        assert "eth0" in out
