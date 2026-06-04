@@ -20,6 +20,7 @@
 - Space key: JunOS-style — completes unique prefix, shows options when ambiguous
 - Ctrl+X: clears input line (optimized: cancel_completion + reset without history append)
 - Interface aliasing: `set system interface-rename` maps physical interfaces to et0/et1 everywhere in nos-cli
+- lo0 loopback: dummy interface support, units lo0.0/lo0.1/etc, excluded from interface-rename
 
 ### Show Commands
 - `show interfaces` — live data via pyroute2, IPv6 addresses displayed
@@ -91,4 +92,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1250 passing, 0 failing - 2026-06-04
+- Total: 1302 passing, 0 failing - 2026-06-04
