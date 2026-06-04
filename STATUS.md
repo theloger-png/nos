@@ -29,6 +29,9 @@
 - `show arp` — with interface and hostname filters
 - `show ipv6 neighbors` — with interface filter
 - `show ethernet-switching table` — with interface/vlan/summary filters
+- `show ethernet-switching interface` — per-interface switching info
+- `show ethernet-switching statistics` — per-interface packet counters
+- `show ethernet-switching flood` — per-VLAN flood group membership
 - `show configuration` — tree format + `| display set` pipe
 - `show route` (stub)
 - `show bgp` (stub)
@@ -68,10 +71,8 @@
 - `nos-apply` permissions: `UMask=0002`, `/opt/nos` group-writable
 
 ## Known Limitations / TODO
-- `show ethernet-switching interface/statistics/flood`: not implemented
 - Production mode: NOS full control of interfaces (disable netplan) — not yet
 - Interface aliases: rename `ens34` → `et0`, `et1`, etc.
-- IP addresses remaining on physical interfaces after delete (persistent tracking fix needed)
 
 ## Architecture Decisions
 - JunOS-like CLI identical syntax
@@ -84,4 +85,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1097 passing, 1 failing (`test_new_switchport_calls_apply_bridge`) — 2026-06-04
+- Total: 1098 passing, 0 failing — 2026-06-04
