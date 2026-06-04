@@ -71,6 +71,13 @@ info "Installing tmpfiles.d config…"
 echo "d /run/nos 0775 root ${NOS_USER} - -" > /etc/tmpfiles.d/nos.conf
 ok "tmpfiles.d config installed."
 
+# ── kernel modules — dummy for lo0 loopback interfaces ──────────────────────
+info "Configuring kernel modules for loopback (dummy) support…"
+grep -qxF 'dummy' /etc/modules-load.d/nos.conf 2>/dev/null \
+    || printf 'dummy\n' >> /etc/modules-load.d/nos.conf
+modprobe dummy 2>/dev/null || warn "modprobe dummy: module may already be built-in"
+ok "dummy module configured (/etc/modules-load.d/nos.conf)."
+
 # ── 4. build PFE ──────────────────────────────────────────────────────────────
 info "Building PFE (C/XDP)…"
 (cd "${REPO_ROOT}/pfe" && make clean && make)

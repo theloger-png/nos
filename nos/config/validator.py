@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Optional
 
 import pydantic
 
 from nos.config.schema import BgpTypeEnum, NOSConfig
+
+_LOOPBACK_DUMMY_RE = re.compile(r"^lo\d+")
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +115,7 @@ class ConfigValidator:
         self._check_bgp_policy_references(config, result)
         self._check_routing_instance_interface_references(config, result)
         self._check_policy_prefix_list_references(config, result)
+        self._check_loopback_interface_constraints(config, result)
 
     def _check_vlan_member_references(self, config: NOSConfig, result: ValidationResult) -> None:
         """Switchport vlan member names must resolve to a defined VLAN (or be 'all' / numeric)."""
@@ -221,3 +225,19 @@ class ConfigValidator:
                             f"policy_options.policy_statement.{ps_name}.term.{term_name}.from_config.prefix_list",
                             f"prefix_list {pl!r} is not defined in policy_options.prefix_list",
                         )
+
+    def _check_loopback_interface_constraints(
+        self, config: NOSConfig, result: ValidationResult
+    ) -> None:
+        """Loopback interfaces (lo0, lo1, …) must not use family ethernet-switching."""
+        for iface_name, iface in config.interfaces.items():
+            if not _LOOPBACK_DUMMY_RE.match(iface_name):
+                continue
+            if not iface.unit:
+                continue
+            for unit_id, unit in iface.unit.items():
+                if unit.family_ethernet_switching is not None:
+                    result.add_error(
+                        f"interfaces.{iface_name}.unit.{unit_id}.family_ethernet_switching",
+                        f"loopback interface {iface_name!r} does not support family ethernet-switching",
+                    )

@@ -777,3 +777,114 @@ def test_vlan_member_numeric_string_out_of_range_fails():
         },
         msg_contains="out of range",
     )
+
+
+# ---------------------------------------------------------------------------
+# lo0 loopback interface constraints
+# ---------------------------------------------------------------------------
+
+def test_lo0_with_family_inet_is_valid():
+    """lo0 with family_inet address is a valid routed loopback."""
+    assert_valid(
+        {
+            "interfaces": {
+                "lo0": {
+                    "family_inet": {"address": {"1.1.1.1/32": {}}}
+                }
+            }
+        }
+    )
+
+
+def test_lo0_with_family_inet6_is_valid():
+    """lo0 with family_inet6 address is valid."""
+    assert_valid(
+        {
+            "interfaces": {
+                "lo0": {
+                    "family_inet6": {"address": {"::1/128": {}}}
+                }
+            }
+        }
+    )
+
+
+def test_lo0_unit0_with_family_inet_is_valid():
+    """lo0 unit 0 with family_inet is the standard JunOS loopback config."""
+    assert_valid(
+        {
+            "interfaces": {
+                "lo0": {
+                    "unit": {
+                        "0": {
+                            "family_inet": {"address": {"1.1.1.1/32": {}}}
+                        }
+                    }
+                }
+            }
+        }
+    )
+
+
+def test_lo0_rejects_ethernet_switching():
+    """lo0 must not allow family ethernet-switching on any unit."""
+    assert_invalid(
+        {
+            "interfaces": {
+                "lo0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": ["all"]},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        path_contains="interfaces.lo0.unit.0.family_ethernet_switching",
+        msg_contains="does not support family ethernet-switching",
+    )
+
+
+def test_lo1_rejects_ethernet_switching():
+    """lo1 (any loN) must not allow family ethernet-switching."""
+    assert_invalid(
+        {
+            "interfaces": {
+                "lo1": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "trunk",
+                                "vlan": {"members": ["all"]},
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        path_contains="interfaces.lo1.unit.0.family_ethernet_switching",
+        msg_contains="does not support family ethernet-switching",
+    )
+
+
+def test_non_loopback_with_ethernet_switching_not_affected():
+    """eth0 with ethernet-switching is unaffected by the loopback constraint."""
+    assert_valid(
+        {
+            "interfaces": {
+                "eth0": {
+                    "unit": {
+                        "0": {
+                            "family_ethernet_switching": {
+                                "interface_mode": "access",
+                                "vlan": {"members": ["all"]},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    )

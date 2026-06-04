@@ -516,7 +516,7 @@ class OperationalMode:
             idx = link["index"]
             kernel_mtu = link.get_attr("IFLA_MTU") or 1500
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
-            link_state = "Up" if operstate == "UP" else "Down"
+            link_state = "Up" if operstate in ("UP", "UNKNOWN") else "Down"
 
             # Config key: use display_name (alias or physical) since config stores aliases
             cfg_key = display_name.replace("-", "_")
@@ -625,7 +625,7 @@ class OperationalMode:
             rows.append({
                 "name": display_name,
                 "admin": "down" if disabled else "up",
-                "link": "up" if operstate == "UP" else "down",
+                "link": "up" if operstate in ("UP", "UNKNOWN") else "down",
                 "mtu": iface_cfg.get("mtu", link.get_attr("IFLA_MTU") or 1500),
                 "desc": iface_cfg.get("description", ""),
                 "addrs": addr_map.get(idx, []),
@@ -898,7 +898,7 @@ class OperationalMode:
 
             display_name = self._iface_display(name, alias_map)
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
-            status = "active" if operstate == "UP" else "inactive"
+            status = "active" if operstate in ("UP", "UNKNOWN") else "inactive"
             mode = (
                 self._pfe.detect_forwarding_mode(name)
                 if pfe_active
@@ -1200,7 +1200,7 @@ class OperationalMode:
                 operstate = operstate_map.get(physical, "UNKNOWN")
                 rows.append({
                     "name": display,
-                    "state": "up" if operstate == "UP" else "down",
+                    "state": "up" if operstate in ("UP", "UNKNOWN") else "down",
                     "mode": mode,
                     "vlans": ", ".join(vlan_names) if vlan_names else "-",
                 })

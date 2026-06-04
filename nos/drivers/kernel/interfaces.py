@@ -4,6 +4,7 @@ import ipaddress
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
@@ -12,7 +13,11 @@ from pyroute2 import IPRoute
 logger = logging.getLogger(__name__)
 
 # Physical / pre-existing interface name prefixes — skip creation for these.
+# Note: plain 'lo' (system loopback) stays here; lo0, lo1, … are NOS dummies.
 _PHYSICAL_PREFIXES = ("eth", "ens", "enp", "eno", "lo", "bond", "team")
+
+# NOS-managed loopback dummy interfaces: lo0, lo1, lo2, …  (NOT plain 'lo').
+_LOOPBACK_DUMMY_RE = re.compile(r"^lo\d+$")
 
 _STATE_FILE = Path("/opt/nos/managed_addresses.json")
 
@@ -136,7 +141,16 @@ class InterfaceDriver:
             self._sync_addresses(ip, idx, name, config)
 
     def apply_subinterface(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
-        """Create or update a VLAN subinterface <parent>.<unit_num>."""
+        """Create or update a subinterface <parent>.<unit_num>.
+
+        For loopback dummies (lo0, lo1, …) unit 0 maps to the parent interface
+        itself; unit N > 0 creates a separate dummy <parent>.<unit_num>.
+        For all other interfaces VLAN subinterfaces are used.
+        """
+        if _LOOPBACK_DUMMY_RE.match(parent):
+            self._apply_loopback_unit(parent, unit_num, config)
+            return
+
         vlan_id = config.get("vlan_id")
         sub_name = f"{parent}.{unit_num}"
         with self._iproute_factory() as ip:
@@ -190,6 +204,29 @@ class InterfaceDriver:
             self._sync_addresses(ip, idx, name, config)
             self._apply_state(ip, idx, config)
 
+    def _apply_loopback_unit(self, parent: str, unit_num: int, config: Dict[str, Any]) -> None:
+        """Apply a loopback unit config.
+
+        Unit 0 → sync addresses directly on the parent dummy (no kernel subinterface).
+        Unit N > 0 → create <parent>.<unit_num> as a separate dummy interface.
+        """
+        target_name = parent if unit_num == 0 else f"{parent}.{unit_num}"
+        with self._iproute_factory() as ip:
+            idx = self._lookup(ip, target_name)
+            if idx is None:
+                if unit_num == 0:
+                    logger.warning(
+                        "Loopback interface %s not found; run apply_interface first", parent
+                    )
+                    return
+                ip.link("add", ifname=target_name, kind="dummy")
+                idx = self._lookup(ip, target_name)
+                if idx is None:
+                    raise RuntimeError(f"Failed to create loopback subinterface {target_name}")
+                logger.debug("Created loopback dummy subinterface %s", target_name)
+            self._sync_addresses(ip, idx, target_name, config)
+            self._apply_state(ip, idx, config)
+
     def delete_interface(self, name: str) -> None:
         """Delete a virtual interface (no-op for physical interfaces)."""
         if self._is_physical(name):
@@ -215,6 +252,9 @@ class InterfaceDriver:
     @staticmethod
     def _is_physical(name: str) -> bool:
         if "." in name:
+            return False
+        # lo0, lo1, … are NOS-managed dummies even though "lo" is in _PHYSICAL_PREFIXES.
+        if _LOOPBACK_DUMMY_RE.match(name):
             return False
         return any(name.startswith(p) for p in _PHYSICAL_PREFIXES)
 

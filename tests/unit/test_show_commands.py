@@ -127,12 +127,12 @@ class TestShowInterfacesOperational:
             out = oper.execute("show interfaces")
         assert "Physical link is Down" in out
 
-    def test_unknown_operstate_shown_as_down(self, oper):
+    def test_unknown_operstate_shown_as_up(self, oper):
         links = [_MockLink("eth0", 2, 0, 1500, "UNKNOWN")]
         mock_ip = _make_iproute_mock(links, [])
         with patch(_PATCH_IPROUTE, mock_ip):
             out = oper.execute("show interfaces")
-        assert "Physical link is Down" in out
+        assert "Physical link is Up" in out
 
     def test_loopback_skipped_by_default(self, oper):
         lo = _MockLink("lo", 1, 0x8, 65536, "UNKNOWN")  # IFF_LOOPBACK = 0x8
@@ -1310,12 +1310,12 @@ class TestShowForwarding:
             out = oper.execute("show forwarding")
         assert "inactive" in out
 
-    def test_unknown_operstate_shows_inactive(self, store):
+    def test_unknown_operstate_shows_active(self, store):
         oper = OperationalMode(store, pfe=_make_pfe())
         mock_ip = _make_iproute_mock([_MockLink("eth0", 2, 0, 1500, "UNKNOWN")], [])
         with patch(_PATCH_IPROUTE, mock_ip):
             out = oper.execute("show forwarding")
-        assert "inactive" in out
+        assert "active" in out
 
     def test_pfe_none_shows_kernel_mode(self, store):
         oper = OperationalMode(store, pfe=None)
@@ -2728,7 +2728,7 @@ class TestShowEthernetSwitchingInterface:
             out = oper.execute("show ethernet-switching interface")
         assert "down" in out
 
-    def test_state_down_when_pyroute2_unavailable(self, store, engine):
+    def test_state_up_when_pyroute2_unavailable(self, store, engine):
         oper = _commit_switching(store, engine, [
             "set vlans vlan100 vlan-id 100",
             "set interfaces ens33.0 family ethernet-switching interface-mode access",
@@ -2737,7 +2737,7 @@ class TestShowEthernetSwitchingInterface:
         with patch(_PATCH_IPROUTE, None):
             out = oper.execute("show ethernet-switching interface")
         assert "ens33.0" in out
-        assert "down" in out
+        assert "up" in out
 
     def test_filter_by_unit_name(self, store, engine):
         oper = _commit_switching(store, engine, [

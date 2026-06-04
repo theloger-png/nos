@@ -171,6 +171,179 @@ def test_apply_interface_creates_dummy_for_unknown():
 
 
 # ---------------------------------------------------------------------------
+# lo0 loopback dummy — apply_interface
+# ---------------------------------------------------------------------------
+
+def test_lo0_apply_interface_creates_dummy_when_absent():
+    """lo0 must be created as a dummy interface when it does not exist in kernel."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[], [6]]  # not found, then found after creation
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("lo0", {})
+
+    ip.link.assert_any_call("add", ifname="lo0", kind="dummy")
+
+
+def test_lo0_apply_interface_reuses_existing_dummy():
+    """If lo0 already exists, no link add should be called."""
+    ip = _make_ip(ifindex=7)
+    driver = _make_driver(ip)
+    driver.apply_interface("lo0", {})
+
+    for c in ip.link.call_args_list:
+        assert c.args[0] != "add", "Should not re-create an existing lo0"
+
+
+def test_lo0_apply_interface_assigns_loopback_address():
+    """lo0 with family_inet address should have the address applied."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[], [6]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("lo0", {"family_inet": {"address": {"1.1.1.1/32": {}}}})
+
+    ip.addr.assert_any_call("add", index=6, address="1.1.1.1", prefixlen=32)
+
+
+def test_lo0_apply_interface_assigns_ipv6_loopback_address():
+    """lo0 with family_inet6 address should have the IPv6 address applied."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[], [6]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_interface("lo0", {"family_inet6": {"address": {"::1/128": {}}}})
+
+    ip.addr.assert_any_call("add", index=6, address="::1", prefixlen=128)
+
+
+def test_plain_lo_is_still_physical_not_created(caplog):
+    """Plain 'lo' (system loopback) must not be created — it is physical."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = []  # not found
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.apply_interface("lo", {})
+
+    assert "not found" in caplog.text
+    ip.link.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# lo0 loopback dummy — delete_interface
+# ---------------------------------------------------------------------------
+
+def test_lo0_delete_interface_removes_dummy():
+    """delete_interface('lo0') must delete the dummy kernel interface."""
+    ip = _make_ip(ifindex=6)
+    driver = _make_driver(ip)
+    driver.delete_interface("lo0")
+
+    ip.link.assert_any_call("set", index=6, state="down")
+    ip.link.assert_any_call("del", index=6)
+
+
+def test_lo0_delete_interface_noop_when_not_found():
+    """delete_interface('lo0') is a no-op when lo0 is absent from kernel."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    driver.delete_interface("lo0")
+
+    ip.link.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# lo0 loopback dummy — apply_subinterface (loopback units)
+# ---------------------------------------------------------------------------
+
+def test_lo0_unit0_applies_address_to_parent():
+    """Unit 0 on lo0 maps to lo0 itself — addresses go on lo0, no link add."""
+    ip = _make_ip(ifindex=6)
+    driver = _make_driver(ip)
+    driver.apply_subinterface("lo0", 0, {"family_inet": {"address": {"10.0.0.1/32": {}}}})
+
+    # No new link should be created
+    for c in ip.link.call_args_list:
+        assert c.args[0] != "add", "Unit 0 must not create a kernel subinterface"
+
+    ip.addr.assert_any_call("add", index=6, address="10.0.0.1", prefixlen=32)
+
+
+def test_lo0_unit0_state_up_when_not_disabled():
+    """Unit 0 on lo0 brings lo0 up."""
+    ip = _make_ip(ifindex=6)
+    driver = _make_driver(ip)
+    driver.apply_subinterface("lo0", 0, {})
+
+    ip.link.assert_any_call("set", index=6, state="up")
+
+
+def test_lo0_unit0_warns_when_parent_absent(caplog):
+    """Unit 0 on lo0 logs a warning when lo0 doesn't exist yet."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = []
+
+    driver = _make_driver(ip)
+    with caplog.at_level("WARNING"):
+        driver.apply_subinterface("lo0", 0, {})
+
+    assert "lo0" in caplog.text
+    ip.link.assert_not_called()
+
+
+def test_lo0_unit1_creates_new_dummy():
+    """Unit 1 on lo0 creates a separate dummy interface lo0.1."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [
+        [],   # lo0.1 not found
+        [8],  # lo0.1 found after creation
+    ]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_subinterface("lo0", 1, {})
+
+    ip.link.assert_any_call("add", ifname="lo0.1", kind="dummy")
+
+
+def test_lo0_unit1_applies_address():
+    """Unit 1 on lo0 assigns address to lo0.1."""
+    ip = MagicMock()
+    ip.link_lookup.side_effect = [[], [8]]
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_subinterface("lo0", 1, {"family_inet": {"address": {"2.2.2.2/32": {}}}})
+
+    ip.addr.assert_any_call("add", index=8, address="2.2.2.2", prefixlen=32)
+
+
+def test_lo0_unit1_reuses_existing_dummy():
+    """If lo0.1 already exists, no link add should be called."""
+    ip = MagicMock()
+    ip.link_lookup.return_value = [8]  # lo0.1 already present
+    ip.addr.return_value = []
+    ip.link.return_value = []
+
+    driver = _make_driver(ip)
+    driver.apply_subinterface("lo0", 1, {})
+
+    for c in ip.link.call_args_list:
+        assert c.args[0] != "add", "Should not re-create an existing lo0.1"
+
+
+# ---------------------------------------------------------------------------
 # delete_interface
 # ---------------------------------------------------------------------------
 
