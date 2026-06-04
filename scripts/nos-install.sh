@@ -52,6 +52,51 @@ else
     warn "Group 'frrvty' not found — install frr first, then re-run this script."
 fi
 
+# ── 2b. frr group membership (read /etc/frr/daemons) ─────────────────────────
+info "Adding '${NOS_USER}' to frr group for FRR daemons file access…"
+if getent group frr &>/dev/null; then
+    usermod -aG frr "${NOS_USER}"
+    ok "Added '${NOS_USER}' to frr group."
+else
+    warn "Group 'frr' not found — install frr first, then re-run this script."
+fi
+
+# ── 2c. sudoers rule — FRR daemon management ─────────────────────────────────
+# /etc/frr/daemons is owned frr:frr 640; the frr group has read-only access.
+# nos-cli needs to write the file and restart FRR when protocols are committed.
+# A targeted sudoers rule grants exactly those two operations, nothing more.
+info "Installing sudoers rule for FRR daemon management…"
+cat > /etc/sudoers.d/nos-frr <<'SUDOERS'
+# Allow the nos service account to update /etc/frr/daemons and /etc/frr/frr.conf and restart FRR.
+# These are written by nos/drivers/frr/client.py:FRRClient.sync_daemons().
+nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/daemons
+nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/frr/frr.conf
+nos ALL=(ALL) NOPASSWD: /bin/systemctl restart frr
+SUDOERS
+chmod 0440 /etc/sudoers.d/nos-frr
+ok "Sudoers rule installed at /etc/sudoers.d/nos-frr."
+
+# ── 2d. FRR log file permissions ────────────────────────────────────────────────
+info "Fixing FRR log file permissions…"
+frr_log="/var/log/frr/frr-reload.log"
+if [[ ! -e "${frr_log}" ]]; then
+    touch "${frr_log}"
+    ok "  Created ${frr_log}."
+fi
+chown frr:frr "${frr_log}"
+chmod 0664 "${frr_log}"
+ok "FRR log file permissions fixed."
+
+# ── 2e. FRR runtime directory permissions ───────────────────────────────────────
+info "Fixing FRR runtime directory permissions…"
+if [[ -d /var/run/frr ]]; then
+    chown frr:frr /var/run/frr
+    chmod 0775 /var/run/frr
+    ok "FRR runtime directory permissions fixed."
+else
+    warn "/var/run/frr does not exist yet — will be created by tmpfiles.d on next boot."
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
@@ -66,9 +111,10 @@ chown root:"${NOS_USER}" "${NOS_RUNDIR}"
 chmod 775 "${NOS_RUNDIR}"
 ok "Directories ready."
 
-# ── tmpfiles.d — recreate /run/nos on every reboot ──────────────────────────
+# ── tmpfiles.d — recreate /run/nos and /var/run/frr on every reboot ──────────
 info "Installing tmpfiles.d config…"
 echo "d /run/nos 0775 root ${NOS_USER} - -" > /etc/tmpfiles.d/nos.conf
+echo "d /var/run/frr 0775 frr frr - -" >> /etc/tmpfiles.d/nos.conf
 ok "tmpfiles.d config installed."
 
 # ── kernel modules — dummy for lo0 loopback interfaces ──────────────────────

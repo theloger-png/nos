@@ -341,10 +341,11 @@ class ConfigApplier:
     ) -> None:
         isis_changed = new.get("isis") != old.get("isis")
         bgp_changed = new.get("bgp") != old.get("bgp")
-        if not isis_changed and not bgp_changed:
+        ospf_changed = new.get("ospf") != old.get("ospf")
+        if not isis_changed and not bgp_changed and not ospf_changed:
             return
 
-        log.info("Applying protocol config (IS-IS/BGP changed)")
+        log.info("Applying protocol config (IS-IS/BGP/OSPF changed)")
         alias_map = self._get_alias_map(full_config)
         render_config = full_config
         if alias_map is not None:
@@ -352,3 +353,6 @@ class ConfigApplier:
             render_config = migrate_config_reverse(full_config, alias_map)
         rendered = self._renderer.render(render_config)
         self._frr.write_frr_conf(rendered)
+
+        active_protocols = {p for p in ("bgp", "isis", "ospf") if new.get(p)}
+        self._frr.sync_daemons(active_protocols)

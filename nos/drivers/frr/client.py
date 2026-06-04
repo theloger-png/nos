@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import logging
+import re
 import subprocess
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 _VTYSH_BIN = "/usr/bin/vtysh"
 _FRR_CONF = Path("/etc/frr/frr.conf")
 _FRR_RELOAD = "/usr/lib/frr/frr-reload.py"
+_FRR_DAEMONS = Path("/etc/frr/daemons")
+
+# Maps NOS protocol config key → FRR daemon name in /etc/frr/daemons
+_PROTO_TO_DAEMON: dict[str, str] = {
+    "bgp": "bgpd",
+    "isis": "isisd",
+    "ospf": "ospfd",
+}
 
 
 class FRRClientError(Exception):
@@ -63,7 +72,25 @@ class FRRClient:
         Falls back to ``vtysh -f`` when frr-reload.py is unavailable.
         """
         _FRR_CONF.parent.mkdir(parents=True, exist_ok=True)
-        _FRR_CONF.write_text(content)
+        try:
+            result = self._run(
+                ["sudo", "tee", str(_FRR_CONF)],
+                input=content.encode(),
+                capture_output=True,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "Could not write %s (rc=%d): %s — FRR config not updated",
+                    _FRR_CONF,
+                    result.returncode,
+                    result.stderr.decode().strip() if isinstance(result.stderr, bytes) else result.stderr.strip(),
+                )
+                return
+        except OSError as exc:
+            logger.warning(
+                "Cannot write %s: %s — FRR config not updated", _FRR_CONF, exc
+            )
+            return
         logger.debug("Wrote %d bytes to %s", len(content), _FRR_CONF)
         self._reload()
 
@@ -90,6 +117,92 @@ class FRRClient:
     # ------------------------------------------------------------------
     # Reload
     # ------------------------------------------------------------------
+
+    def sync_daemons(self, active_protocols: Set[str]) -> None:
+        """Enable/disable FRR daemons to match *active_protocols*; restart FRR if changed.
+
+        Reads /etc/frr/daemons, flips bgpd/isisd/ospfd to yes/no as needed,
+        writes via ``sudo tee``, then runs ``sudo systemctl restart frr``.
+        Both write and restart require sudoers rules (installed by nos-install.sh).
+
+        Permission failures (unwritable file, sudo not configured) are logged as
+        warnings and silently skipped.  A failed ``systemctl restart frr`` raises
+        FRRClientError because FRR is now in an inconsistent state.
+        """
+        try:
+            content = _FRR_DAEMONS.read_text()
+        except OSError as exc:
+            logger.warning(
+                "Cannot read %s: %s — skipping daemon sync", _FRR_DAEMONS, exc
+            )
+            return
+
+        wanted: dict[str, str] = {
+            daemon: ("yes" if proto in active_protocols else "no")
+            for proto, daemon in _PROTO_TO_DAEMON.items()
+        }
+
+        lines = content.splitlines()
+        new_lines: list[str] = []
+        changed = False
+        for line in lines:
+            matched = False
+            for daemon, desired in wanted.items():
+                m = re.match(rf"^{re.escape(daemon)}=(yes|no)", line)
+                if m:
+                    current_val = m.group(1)
+                    if current_val != desired:
+                        new_lines.append(f"{daemon}={desired}")
+                        logger.info(
+                            "FRR daemon %s: %s → %s", daemon, current_val, desired
+                        )
+                        changed = True
+                    else:
+                        new_lines.append(line)
+                    matched = True
+                    break
+            if not matched:
+                new_lines.append(line)
+
+        if not changed:
+            return
+
+        new_content = "\n".join(new_lines)
+        if content.endswith("\n"):
+            new_content += "\n"
+
+        try:
+            result = self._run(
+                ["sudo", "tee", str(_FRR_DAEMONS)],
+                input=new_content,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                logger.warning(
+                    "Could not write %s (rc=%d): %s — FRR daemons not updated",
+                    _FRR_DAEMONS,
+                    result.returncode,
+                    result.stderr.strip(),
+                )
+                return
+        except OSError as exc:
+            logger.warning(
+                "Cannot write %s: %s — FRR daemons not updated", _FRR_DAEMONS, exc
+            )
+            return
+
+        result = self._run(
+            ["sudo", "systemctl", "restart", "frr"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise FRRClientError(
+                f"systemctl restart frr failed (rc={result.returncode}): "
+                f"{result.stderr.strip()}"
+            )
+        logger.info("FRR restarted after daemon config change")
 
     def _reload(self) -> None:
         reload_bin = Path(_FRR_RELOAD)

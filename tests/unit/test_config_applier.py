@@ -438,6 +438,48 @@ class TestProtocols:
             applier.apply(self._proto(isis={"interface": {}}), {})
         frr.write_frr_conf.assert_called_once_with("conf")
 
+    def test_bgp_only_calls_sync_daemons_with_bgp_set(self):
+        applier, _, frr, _ = _make_applier()
+        new = self._proto(bgp={"group": {"IBGP": {}}})
+        with patch.object(applier._renderer, "render", return_value="conf"):
+            applier.apply({}, new)
+        frr.sync_daemons.assert_called_once_with({"bgp"})
+
+    def test_isis_only_calls_sync_daemons_with_isis_set(self):
+        applier, _, frr, _ = _make_applier()
+        new = self._proto(isis={"interface": {"eth0": {}}})
+        with patch.object(applier._renderer, "render", return_value="conf"):
+            applier.apply({}, new)
+        frr.sync_daemons.assert_called_once_with({"isis"})
+
+    def test_bgp_and_isis_calls_sync_daemons_with_both(self):
+        applier, _, frr, _ = _make_applier()
+        new = self._proto(bgp={"group": {}}, isis={"interface": {}})
+        with patch.object(applier._renderer, "render", return_value="conf"):
+            applier.apply({}, new)
+        frr.sync_daemons.assert_called_once_with({"bgp", "isis"})
+
+    def test_bgp_removed_calls_sync_daemons_with_empty_set(self):
+        applier, _, frr, _ = _make_applier()
+        old = self._proto(bgp={"group": {"IBGP": {}}})
+        with patch.object(applier._renderer, "render", return_value="conf"):
+            applier.apply(old, {})
+        frr.sync_daemons.assert_called_once_with(set())
+
+    def test_no_protocol_change_skips_sync_daemons(self):
+        applier, _, frr, _ = _make_applier()
+        config = self._proto(isis={"interface": {"eth0": {}}})
+        applier.apply(config, config)
+        frr.sync_daemons.assert_not_called()
+
+    def test_ospf_change_triggers_frr_write_and_sync(self):
+        applier, _, frr, _ = _make_applier()
+        new = {"protocols": {"ospf": {"area": {"0": {}}}}}
+        with patch.object(applier._renderer, "render", return_value="conf"):
+            applier.apply({}, new)
+        frr.write_frr_conf.assert_called_once_with("conf")
+        frr.sync_daemons.assert_called_once_with({"ospf"})
+
 
 # ---------------------------------------------------------------------------
 # Section isolation — failures

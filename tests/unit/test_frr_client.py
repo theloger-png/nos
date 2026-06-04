@@ -101,20 +101,27 @@ def test_show_raises_on_nonzero():
 # ---------------------------------------------------------------------------
 
 def test_write_frr_conf_writes_file(tmp_path, monkeypatch):
-    monkeypatch.setattr("nos.drivers.frr.client._FRR_CONF", tmp_path / "frr.conf")
+    conf_path = tmp_path / "frr.conf"
+    monkeypatch.setattr("nos.drivers.frr.client._FRR_CONF", conf_path)
     # frr-reload.py doesn't exist → fallback branch
     monkeypatch.setattr(
         "nos.drivers.frr.client._FRR_RELOAD",
         str(tmp_path / "nonexistent-reload.py"),
     )
 
-    run_fn = MagicMock(return_value=_ok())
+    def mock_run(cmd, *args, **kwargs):
+        # When sudo tee is called, actually write the file
+        if cmd[0:2] == ["sudo", "tee"]:
+            conf_path.parent.mkdir(parents=True, exist_ok=True)
+            conf_path.write_bytes(kwargs.get("input", b""))
+        return _ok()
+
+    run_fn = MagicMock(side_effect=mock_run)
     client = FRRClient(run_fn=run_fn)
     client.write_frr_conf("frr version 8.0\nhostname nos01\n!")
 
-    conf = tmp_path / "frr.conf"
-    assert conf.exists()
-    assert "nos01" in conf.read_text()
+    assert conf_path.exists()
+    assert "nos01" in conf_path.read_text()
 
 
 def test_write_frr_conf_uses_frr_reload_when_available(tmp_path, monkeypatch):
@@ -129,8 +136,10 @@ def test_write_frr_conf_uses_frr_reload_when_available(tmp_path, monkeypatch):
     client = FRRClient(run_fn=run_fn)
     client.write_frr_conf("!")
 
-    cmd_used = run_fn.call_args[0][0]
-    assert "frr-reload.py" in " ".join(cmd_used)
+    # Second call should be frr-reload.py
+    assert run_fn.call_count == 2
+    reload_call = run_fn.call_args_list[1]
+    assert "frr-reload.py" in " ".join(reload_call[0][0])
 
 
 def test_write_frr_conf_fallback_vtysh_f(tmp_path, monkeypatch):
@@ -145,8 +154,10 @@ def test_write_frr_conf_fallback_vtysh_f(tmp_path, monkeypatch):
     client = FRRClient(run_fn=run_fn)
     client.write_frr_conf("!")
 
-    cmd_used = run_fn.call_args[0][0]
-    assert "-f" in cmd_used
+    # Second call should be vtysh -f
+    assert run_fn.call_count == 2
+    vtysh_call = run_fn.call_args_list[1]
+    assert "-f" in vtysh_call[0][0]
 
 
 def test_write_frr_conf_raises_on_reload_failure(tmp_path, monkeypatch):
@@ -157,7 +168,194 @@ def test_write_frr_conf_raises_on_reload_failure(tmp_path, monkeypatch):
         str(tmp_path / "absent.py"),
     )
 
-    run_fn = MagicMock(return_value=_fail(rc=1, stderr="vtysh error"))
+    # First call (sudo tee) succeeds, second call (vtysh -f) fails
+    it = iter([_ok(), _fail(rc=1, stderr="vtysh error")])
+    run_fn = MagicMock(side_effect=lambda *a, **kw: next(it))
     client = FRRClient(run_fn=run_fn)
     with pytest.raises(FRRClientError):
         client.write_frr_conf("!")
+
+
+# ---------------------------------------------------------------------------
+# sync_daemons
+# ---------------------------------------------------------------------------
+
+_DAEMONS_CONTENT = """\
+bgpd=no
+ospfd=no
+ospf6d=no
+isisd=no
+ripd=no
+vtysh_enable=yes
+zebra_options="  -A 127.0.0.1"
+"""
+
+
+def _daemons_file(tmp_path, content=_DAEMONS_CONTENT):
+    f = tmp_path / "daemons"
+    f.write_text(content)
+    return f
+
+
+class TestSyncDaemons:
+    def _client_and_run(self, side_effects=None):
+        """Return (client, run_fn).  side_effects is a list of return values."""
+        if side_effects is None:
+            side_effects = [_ok(), _ok()]
+        it = iter(side_effects)
+        run_fn = MagicMock(side_effect=lambda *a, **kw: next(it))
+        return FRRClient(run_fn=run_fn), run_fn
+
+    # -- change detection ----------------------------------------------------
+
+    def test_enables_bgpd_when_bgp_active(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        tee_call = run_fn.call_args_list[0]
+        assert tee_call[0][0] == ["sudo", "tee", str(daemons)]
+        assert "bgpd=yes" in tee_call[1]["input"]
+
+    def test_enables_isisd_when_isis_active(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"isis"})
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert "isisd=yes" in tee_input
+
+    def test_enables_ospfd_when_ospf_active(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"ospf"})
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert "ospfd=yes" in tee_input
+
+    def test_enables_multiple_daemons_simultaneously(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp", "isis"})
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert "bgpd=yes" in tee_input
+        assert "isisd=yes" in tee_input
+
+    def test_disables_bgpd_when_removed(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path, "bgpd=yes\nisisd=no\nospfd=no\n")
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons(set())
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert "bgpd=no" in tee_input
+
+    def test_no_subprocess_call_when_already_correct(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path, "bgpd=yes\nisisd=no\nospfd=no\n")
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        run_fn.assert_not_called()
+
+    def test_no_subprocess_call_when_all_disabled_and_empty_set(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)  # all =no already
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons(set())
+
+        run_fn.assert_not_called()
+
+    # -- restart behaviour ---------------------------------------------------
+
+    def test_restarts_frr_after_change(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        assert run_fn.call_count == 2
+        restart_call = run_fn.call_args_list[1]
+        assert restart_call[0][0] == ["sudo", "systemctl", "restart", "frr"]
+
+    def test_no_restart_when_no_change(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path, "bgpd=yes\nisisd=no\nospfd=no\n")
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        run_fn.assert_not_called()
+
+    # -- error handling ------------------------------------------------------
+
+    def test_graceful_on_daemons_file_missing(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "nos.drivers.frr.client._FRR_DAEMONS", tmp_path / "nonexistent"
+        )
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})  # must not raise
+
+        run_fn.assert_not_called()
+
+    def test_graceful_on_write_failure(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run(
+            side_effects=[_fail(rc=1, stderr="sudo: permission denied"), _ok()]
+        )
+
+        client.sync_daemons({"bgp"})  # must not raise
+
+        # tee was attempted, restart must NOT have been called
+        assert run_fn.call_count == 1
+        assert "tee" in run_fn.call_args_list[0][0][0]
+
+    def test_raises_when_systemctl_restart_fails(self, tmp_path, monkeypatch):
+        daemons = _daemons_file(tmp_path)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run(
+            side_effects=[_ok(), _fail(rc=1, stderr="Failed to restart frr.service")]
+        )
+
+        with pytest.raises(FRRClientError, match="systemctl restart frr failed"):
+            client.sync_daemons({"bgp"})
+
+    # -- output integrity ---------------------------------------------------
+
+    def test_non_daemon_lines_preserved(self, tmp_path, monkeypatch):
+        content = "bgpd=no\nospfd=no\nisisd=no\nvtysh_enable=yes\nzebra_options=\"-A 127.0.0.1\"\n"
+        daemons = _daemons_file(tmp_path, content)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert "vtysh_enable=yes" in tee_input
+        assert 'zebra_options="-A 127.0.0.1"' in tee_input
+
+    def test_trailing_newline_preserved(self, tmp_path, monkeypatch):
+        content = "bgpd=no\nisisd=no\nospfd=no\n"
+        daemons = _daemons_file(tmp_path, content)
+        monkeypatch.setattr("nos.drivers.frr.client._FRR_DAEMONS", daemons)
+        client, run_fn = self._client_and_run()
+
+        client.sync_daemons({"bgp"})
+
+        tee_input = run_fn.call_args_list[0][1]["input"]
+        assert tee_input.endswith("\n")
