@@ -299,6 +299,7 @@ class RoutingOptionsConfig(BaseModel):
 
 class IsisInterfaceConfig(BaseModel):
     point_to_point: bool = False
+    passive: bool = False
     level_1_disable: bool = False
     level_2_disable: bool = False
     hello_interval: Optional[int] = Field(None, ge=1, le=65535)
@@ -338,6 +339,7 @@ class BgpGroup(BaseModel):
     local_as: Optional[int] = Field(None, ge=1, le=4294967295)
     peer_as: Optional[int] = Field(None, ge=1, le=4294967295)
     local_address: Optional[str] = None
+    local_interface: Optional[str] = None
     neighbor: Dict[str, BgpNeighbor] = {}
     export: Optional[str] = None
     import_policy: Optional[str] = None

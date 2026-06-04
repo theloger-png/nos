@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import re
 from typing import Any, Dict, List, Optional
+
+_LOOPBACK_RE = re.compile(r"^lo\d+$")
 
 
 def _router_id_to_net(router_id: str, area: str = "49.0001") -> str:
@@ -25,13 +28,15 @@ class ISISGenerator:
     ``frr.conf`` using :class:`~nos.drivers.frr.renderer.FRRRenderer`.
     """
 
-    def render_interface(self, iface_name: str, iface_cfg: Dict[str, Any]) -> List[str]:
-        """Return FRR interface-level IS-IS stanzas for *iface_name*.
+    def render_interface_body(self, iface_name: str, iface_cfg: Dict[str, Any]) -> List[str]:
+        """Return ISIS body lines for *iface_name* (no interface header or ! footer).
 
-        ``iface_cfg`` corresponds to a serialised :class:`IsisInterfaceConfig`.
+        Used by :class:`~nos.drivers.frr.renderer.FRRRenderer` to compose merged
+        stanzas that also carry IP address configuration.
         """
-        lines = [f"interface {iface_name}"]
-        lines.append(" ip router isis default")
+        lines = [" ip router isis default"]
+        if _LOOPBACK_RE.match(iface_name) or iface_cfg.get("passive"):
+            lines.append(" isis passive")
         if iface_cfg.get("point_to_point"):
             lines.append(" isis point-to-point")
         hi = iface_cfg.get("hello_interval")
@@ -40,8 +45,18 @@ class ISISGenerator:
         ht = iface_cfg.get("hold_time")
         if ht is not None:
             lines.append(f" isis hold-time {ht}")
-        lines.append("!")
         return lines
+
+    def render_interface(self, iface_name: str, iface_cfg: Dict[str, Any]) -> List[str]:
+        """Return FRR interface-level IS-IS stanzas for *iface_name*.
+
+        ``iface_cfg`` corresponds to a serialised :class:`IsisInterfaceConfig`.
+        """
+        return (
+            [f"interface {iface_name}"]
+            + self.render_interface_body(iface_name, iface_cfg)
+            + ["!"]
+        )
 
     def render_router(
         self,

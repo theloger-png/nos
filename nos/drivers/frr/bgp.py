@@ -57,8 +57,11 @@ class BGPGenerator:
             remote_as = group.get("local_as") or local_asn
         lines.append(f" neighbor {name} remote-as {remote_as}")
 
+        local_interface = group.get("local_interface")
         local_addr = group.get("local_address")
-        if local_addr:
+        if local_interface:
+            lines.append(f" neighbor {name} update-source {local_interface}")
+        elif local_addr:
             lines.append(f" neighbor {name} update-source {local_addr}")
 
         # Individual neighbors.
