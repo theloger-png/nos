@@ -89,13 +89,10 @@ ok "FRR log file permissions fixed."
 
 # ── 2e. FRR runtime directory permissions ───────────────────────────────────────
 info "Fixing FRR runtime directory permissions…"
-if [[ -d /var/run/frr ]]; then
-    chown frr:frr /var/run/frr
-    chmod 0775 /var/run/frr
-    ok "FRR runtime directory permissions fixed."
-else
-    warn "/var/run/frr does not exist yet — will be created by tmpfiles.d on next boot."
-fi
+mkdir -p /var/run/frr
+chown frr:frr /var/run/frr
+chmod 0775 /var/run/frr
+ok "FRR runtime directory permissions fixed."
 
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
