@@ -441,7 +441,7 @@ class TestSwitchport:
         applier, kernel, _, _ = _make_applier()
         cfg = self._sw_iface("access", ["vlan100"], {"vlan100": {"vlan_id": 100}})
         applier.apply({}, cfg)
-        kernel.apply_bridge.assert_any_call("nos-br", {})
+        kernel.apply_bridge.assert_any_call("nos-br", {"ports": ["eth1"]})
 
     def test_new_switchport_resolves_vlan_name_to_id(self):
         applier, kernel, _, _ = _make_applier()
