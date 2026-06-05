@@ -227,7 +227,7 @@ class DnsmasqDriver:
     def _start_dhclient(self, iface: str, pidfile: Path) -> None:
         try:
             subprocess.Popen(
-                ["dhclient", "-pf", str(pidfile), iface],
+                ["sudo", "dhclient", "-pf", str(pidfile), iface],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
@@ -242,15 +242,19 @@ class DnsmasqDriver:
         if self._dhclient_running(pidfile):
             try:
                 pid = int(pidfile.read_text().strip())
-                os.kill(pid, signal.SIGTERM)
+                subprocess.run(
+                    ["sudo", "kill", str(pid)],
+                    capture_output=True,
+                    timeout=5,
+                )
                 log.info("Stopped dhclient on %s (pid %d)", iface, pid)
-            except (ValueError, OSError) as exc:
+            except (ValueError, subprocess.TimeoutExpired) as exc:
                 log.warning("Could not stop dhclient on %s: %s", iface, exc)
 
         # Release the lease.
         try:
             subprocess.run(
-                ["dhclient", "-r", iface],
+                ["sudo", "dhclient", "-r", iface],
                 capture_output=True,
                 timeout=10,
             )

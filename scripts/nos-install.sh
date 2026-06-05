@@ -186,6 +186,52 @@ else
     die "Sudoers file validation failed for /etc/sudoers.d/nos-dnsmasq"
 fi
 
+# ── 2h. sudoers rule — dhclient management ────────────────────────────────────
+info "Installing sudoers rule for dhclient management…"
+
+# Find the dhclient binary path
+DHCLIENT_PATH=$(which dhclient)
+if [[ -z "$DHCLIENT_PATH" ]]; then
+    die "dhclient not found in PATH"
+fi
+
+# Build the sudoers content
+read -r -d '' SUDOERS_DHCLIENT <<'SUDOERS_DHCLIENT_EOF' || true
+# Allow the nos service account to manage dhclient processes.
+# These operations are needed by DnsmasqDriver in nos/drivers/dhcp/dnsmasq.py.
+nos ALL=(ALL) NOPASSWD: SUDOERS_DHCLIENT_PATH
+nos ALL=(ALL) NOPASSWD: /bin/kill
+SUDOERS_DHCLIENT_EOF
+
+# Substitute the actual dhclient path
+SUDOERS_DHCLIENT="${SUDOERS_DHCLIENT//SUDOERS_DHCLIENT_PATH/$DHCLIENT_PATH}"
+
+# Add human user if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_DHCLIENT+="
+# Allow the human user to manage dhclient during development.
+$HUMAN_USER ALL=(ALL) NOPASSWD: $DHCLIENT_PATH
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/kill"
+fi
+
+echo "$SUDOERS_DHCLIENT" > /etc/sudoers.d/nos-dhclient
+chmod 0440 /etc/sudoers.d/nos-dhclient
+
+# Validate the sudoers file
+if visudo -c -f /etc/sudoers.d/nos-dhclient 2>/dev/null; then
+    ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-dhclient."
+    ok "  dhclient path: $DHCLIENT_PATH"
+    if [[ -n "$HUMAN_USER" ]]; then
+        ok "  Added dhclient sudoers rules for user '$HUMAN_USER'."
+    fi
+else
+    die "Sudoers file validation failed for /etc/sudoers.d/nos-dhclient"
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos

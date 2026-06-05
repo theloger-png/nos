@@ -530,3 +530,62 @@ def test_apply_with_unknown_interface_no_alias(tmp_driver: DnsmasqDriver) -> Non
     assert conf.exists()
     text = conf.read_text()
     assert "dhcp-range=eth0,10.0.0.100,10.0.0.200" in text
+
+
+# ---------------------------------------------------------------------------
+# sudo command execution
+# ---------------------------------------------------------------------------
+
+def test_start_dhclient_uses_sudo(tmp_driver: DnsmasqDriver) -> None:
+    """_start_dhclient should run dhclient via sudo."""
+    pidfile = tmp_driver._pidfile_dir / "test.pid"
+
+    with patch("subprocess.Popen") as mock_popen:
+        tmp_driver._start_dhclient("eth0", pidfile)
+
+    mock_popen.assert_called_once()
+    cmd = mock_popen.call_args[0][0]
+    assert cmd[0] == "sudo"
+    assert cmd[1] == "dhclient"
+    assert "-pf" in cmd
+    assert str(pidfile) in cmd
+    assert "eth0" in cmd
+
+
+def test_stop_dhclient_uses_sudo_kill(tmp_driver: DnsmasqDriver) -> None:
+    """_stop_dhclient should use sudo kill to terminate dhclient."""
+    pidfile = tmp_driver._pidfile_dir / "dhclient-eth0.pid"
+    pidfile.write_text("12345")
+
+    with patch("subprocess.run") as mock_run:
+        with patch.object(tmp_driver, "_dhclient_running", return_value=True):
+            tmp_driver._stop_dhclient("eth0")
+
+    # First call should be sudo kill
+    calls = mock_run.call_args_list
+    kill_calls = [c for c in calls if "kill" in c[0][0]]
+    assert len(kill_calls) >= 1
+    kill_cmd = kill_calls[0][0][0]
+    assert kill_cmd[0] == "sudo"
+    assert kill_cmd[1] == "kill"
+    assert "12345" in kill_cmd
+
+
+def test_stop_dhclient_releases_lease_with_sudo(tmp_driver: DnsmasqDriver) -> None:
+    """_stop_dhclient should use sudo dhclient -r to release the lease."""
+    pidfile = tmp_driver._pidfile_dir / "dhclient-eth0.pid"
+    pidfile.write_text("12345")
+
+    with patch("subprocess.run") as mock_run:
+        with patch.object(tmp_driver, "_dhclient_running", return_value=True):
+            tmp_driver._stop_dhclient("eth0")
+
+    # dhclient -r call should use sudo
+    calls = mock_run.call_args_list
+    dhclient_calls = [c for c in calls if "dhclient" in c[0][0]]
+    assert len(dhclient_calls) >= 1
+    dhclient_cmd = dhclient_calls[0][0][0]
+    assert dhclient_cmd[0] == "sudo"
+    assert dhclient_cmd[1] == "dhclient"
+    assert "-r" in dhclient_cmd
+    assert "eth0" in dhclient_cmd
