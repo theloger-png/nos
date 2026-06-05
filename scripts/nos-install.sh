@@ -135,6 +135,44 @@ else
 fi
 ok "dnsmasq configured."
 
+# ── 2g. sudoers rule — dnsmasq management ──────────────────────────────────────
+info "Installing sudoers rule for dnsmasq management…"
+
+# Build the sudoers content
+read -r -d '' SUDOERS_DNSMASQ <<'SUDOERS_DNSMASQ_EOF' || true
+# Allow the nos service account to manage dnsmasq service.
+# These operations are needed by DnsmasqDriver in nos/drivers/dhcp/dnsmasq.py.
+nos ALL=(ALL) NOPASSWD: /bin/systemctl reload dnsmasq
+nos ALL=(ALL) NOPASSWD: /bin/systemctl start dnsmasq
+nos ALL=(ALL) NOPASSWD: /bin/systemctl stop dnsmasq
+SUDOERS_DNSMASQ_EOF
+
+# Add human user if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_DNSMASQ+="
+# Allow the human user to manage dnsmasq during development.
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload dnsmasq
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl start dnsmasq
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl stop dnsmasq"
+fi
+
+echo "$SUDOERS_DNSMASQ" > /etc/sudoers.d/nos-dnsmasq
+chmod 0440 /etc/sudoers.d/nos-dnsmasq
+
+# Validate the sudoers file
+if visudo -c -f /etc/sudoers.d/nos-dnsmasq 2>/dev/null; then
+    ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-dnsmasq."
+    if [[ -n "$HUMAN_USER" ]]; then
+        ok "  Added dnsmasq sudoers rules for user '$HUMAN_USER'."
+    fi
+else
+    die "Sudoers file validation failed for /etc/sudoers.d/nos-dnsmasq"
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
