@@ -537,11 +537,12 @@ def test_apply_with_unknown_interface_no_alias(tmp_driver: DnsmasqDriver) -> Non
 # ---------------------------------------------------------------------------
 
 def test_start_dhclient_uses_sudo(tmp_driver: DnsmasqDriver) -> None:
-    """_start_dhclient should run dhclient via sudo."""
+    """_start_dhclient should run dhclient via sudo when not already running."""
     pidfile = tmp_driver._pidfile_dir / "test.pid"
 
-    with patch("subprocess.Popen") as mock_popen:
-        tmp_driver._start_dhclient("eth0", pidfile)
+    with patch.object(tmp_driver, "_dhclient_running", return_value=False):
+        with patch("subprocess.Popen") as mock_popen:
+            tmp_driver._start_dhclient("eth0", pidfile)
 
     mock_popen.assert_called_once()
     cmd = mock_popen.call_args[0][0]
@@ -550,6 +551,38 @@ def test_start_dhclient_uses_sudo(tmp_driver: DnsmasqDriver) -> None:
     assert "-pf" in cmd
     assert str(pidfile) in cmd
     assert "eth0" in cmd
+
+
+def test_start_dhclient_skips_when_already_running(tmp_driver: DnsmasqDriver) -> None:
+    """_start_dhclient must not spawn a new process when one is already running."""
+    pidfile = tmp_driver._pidfile_dir / "test.pid"
+
+    with patch.object(tmp_driver, "_dhclient_running", return_value=True):
+        with patch("subprocess.Popen") as mock_popen:
+            tmp_driver._start_dhclient("eth0", pidfile)
+
+    mock_popen.assert_not_called()
+
+
+def test_dhclient_running_pgrep_fallback(tmp_driver: DnsmasqDriver) -> None:
+    """_dhclient_running falls back to pgrep when PID file is absent."""
+    pidfile = tmp_driver._pidfile_dir / "dhclient-eth0.pid"
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = b"4242\n"
+
+    with patch("subprocess.run", return_value=mock_result) as mock_run:
+        assert tmp_driver._dhclient_running(pidfile, "eth0") is True
+
+    pgrep_call = mock_run.call_args[0][0]
+    assert pgrep_call[0] == "pgrep"
+    assert pgrep_call[1] == "-f"
+    assert "dhclient" in pgrep_call[2]
+    assert "eth0" in pgrep_call[2]
+    # PID file should have been written.
+    assert pidfile.exists()
+    assert pidfile.read_text().strip() == "4242"
 
 
 def test_stop_dhclient_uses_sudo_kill(tmp_driver: DnsmasqDriver) -> None:

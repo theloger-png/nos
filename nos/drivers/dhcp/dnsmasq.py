@@ -211,20 +211,45 @@ class DnsmasqDriver:
         # Start dhclient on newly configured interfaces.
         for iface in dhcp_ifaces:
             pidfile = self._pidfile_dir / f"dhclient-{iface}.pid"
-            if not self._dhclient_running(pidfile):
+            if not self._dhclient_running(pidfile, iface):
                 self._start_dhclient(iface, pidfile)
 
-    def _dhclient_running(self, pidfile: Path) -> bool:
-        if not pidfile.exists():
-            return False
+    def _dhclient_running(self, pidfile: Path, iface: str) -> bool:
+        # Fast path: PID file exists and process is alive.
+        if pidfile.exists():
+            try:
+                pid = int(pidfile.read_text().strip())
+                os.kill(pid, 0)
+                return True
+            except (ValueError, OSError):
+                pass
+
+        # Slow path: PID file missing or stale — scan running processes.
+        # dhclient may have been started as root via sudo, so the PID file
+        # write can fail due to ownership, leaving no file even when running.
         try:
-            pid = int(pidfile.read_text().strip())
-            os.kill(pid, 0)
-            return True
-        except (ValueError, OSError):
-            return False
+            result = subprocess.run(
+                ["pgrep", "-f", f"dhclient.*{iface}"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                pid_str = result.stdout.split()[0].decode()
+                try:
+                    self._pidfile_dir.mkdir(parents=True, exist_ok=True)
+                    pidfile.write_text(pid_str + "\n")
+                except OSError:
+                    pass
+                return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+        return False
 
     def _start_dhclient(self, iface: str, pidfile: Path) -> None:
+        if self._dhclient_running(pidfile, iface):
+            log.debug("dhclient already running on %s, skipping start", iface)
+            return
         try:
             subprocess.Popen(
                 ["sudo", "dhclient", "-pf", str(pidfile), iface],
@@ -239,7 +264,7 @@ class DnsmasqDriver:
 
     def _stop_dhclient(self, iface: str) -> None:
         pidfile = self._pidfile_dir / f"dhclient-{iface}.pid"
-        if self._dhclient_running(pidfile):
+        if self._dhclient_running(pidfile, iface):
             try:
                 pid = int(pidfile.read_text().strip())
                 subprocess.run(
