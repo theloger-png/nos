@@ -20,6 +20,7 @@ def main() -> None:
 
     from nos.config.applier import ConfigApplier
     from nos.config.store import ConfigStore
+    from nos.drivers.dhcp.dnsmasq import DnsmasqDriver
     from nos.drivers.frr import FRRClient
     from nos.drivers.kernel import KernelDriver
     from nos.pfe.manager import PFEManager
@@ -29,7 +30,8 @@ def main() -> None:
     pfe.start()
     kernel_driver = KernelDriver()
     frr_client = FRRClient()
-    applier = ConfigApplier(kernel_driver, frr_client, pfe, store=store)
+    dhcp_driver = DnsmasqDriver()
+    applier = ConfigApplier(kernel_driver, frr_client, pfe, store=store, dhcp_driver=dhcp_driver)
 
     log.info("Applying running configuration...")
     try:

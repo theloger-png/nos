@@ -31,6 +31,7 @@ from nos.config.applier import ConfigApplier
 from nos.config.commit import CommitEngine
 from nos.config.store import ConfigStore
 from nos.config.validator import ConfigValidator
+from nos.drivers.dhcp.dnsmasq import DnsmasqDriver
 from nos.drivers.frr import FRRClient
 from nos.drivers.kernel import KernelDriver
 from nos.pfe.manager import PFEManager
@@ -74,7 +75,8 @@ class NOSShell:
         pfe.start()
         kernel_driver = KernelDriver()
         frr_client = FRRClient()
-        applier = ConfigApplier(kernel_driver, frr_client, pfe, store=self.store)
+        dhcp_driver = DnsmasqDriver()
+        applier = ConfigApplier(kernel_driver, frr_client, pfe, store=self.store, dhcp_driver=dhcp_driver)
         self.commit_engine = CommitEngine(self.store, validator=validator, applier=applier)
         self.username = username or getpass.getuser()
         self.hostname = hostname or socket.gethostname().split(".")[0]

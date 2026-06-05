@@ -213,6 +213,21 @@ for src in "${REPO_ROOT}"/config/*.json; do
     fi
 done
 
+# ── 8a. managed addresses file ────────────────────────────────────────────────
+info "Creating managed addresses file…"
+managed_file="/opt/nos/managed_addresses.json"
+if [[ ! -e "${managed_file}" ]]; then
+    echo "{}" > "${managed_file}"
+    chown root:"${NOS_USER}" "${managed_file}"
+    chmod 0664 "${managed_file}"
+    ok "  Created ${managed_file} with proper permissions."
+else
+    # Update permissions on existing file
+    chown root:"${NOS_USER}" "${managed_file}"
+    chmod 0664 "${managed_file}"
+    ok "  Updated permissions on ${managed_file}."
+fi
+
 # ── 9. systemd services ───────────────────────────────────────────────────────
 info "Installing systemd service units…"
 for unit in "${REPO_ROOT}"/systemd/*.service; do
