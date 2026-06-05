@@ -63,6 +63,21 @@ else
     warn "Group 'frr' not found — install frr first, then re-run this script."
 fi
 
+# Add human user to frr group if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    info "Adding '${HUMAN_USER}' to frr group for FRR runtime file access…"
+    if getent group frr &>/dev/null; then
+        usermod -aG frr "${HUMAN_USER}"
+        ok "Added '${HUMAN_USER}' to frr group."
+    else
+        warn "Group 'frr' not found — install frr first, then re-run this script."
+    fi
+fi
+
 # ── 2c. sudoers rule — FRR daemon management ─────────────────────────────────
 # /etc/frr/daemons is owned frr:frr 640; the frr group has read-only access.
 # nos-cli needs to write the file and restart FRR when protocols are committed.
