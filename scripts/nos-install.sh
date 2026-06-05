@@ -127,6 +127,7 @@ if [[ ! -e /etc/dnsmasq.d/nos-base.conf ]]; then
 # NOS base dnsmasq config — do not edit; managed by nos-install.sh
 no-hosts
 no-resolv
+port=0
 conf-dir=/etc/dnsmasq.d/,*.conf
 DNSMASQ_BASE
     ok "  Wrote /etc/dnsmasq.d/nos-base.conf."

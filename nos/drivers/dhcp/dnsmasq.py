@@ -77,6 +77,7 @@ class DnsmasqDriver:
                 except OSError as exc:
                     log.error("Could not write %s: %s", path, exc)
 
+        self._ensure_dnsmasq_running()
         self._reload_dnsmasq()
 
     def _render_pool_conf(
@@ -100,6 +101,41 @@ class DnsmasqDriver:
             lines.append(f"dhcp-option={iface},6,{dns_server}")
 
         return "\n".join(lines) + "\n"
+
+    def _dnsmasq_running(self) -> bool:
+        """Check if dnsmasq process is currently running."""
+        try:
+            result = subprocess.run(
+                ["pidof", "dnsmasq"],
+                capture_output=True,
+                timeout=5,
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+
+    def _ensure_dnsmasq_running(self) -> None:
+        """Start dnsmasq if it's not already running."""
+        if self._dnsmasq_running():
+            return
+        try:
+            result = subprocess.run(
+                ["sudo", "systemctl", "start", "dnsmasq"],
+                capture_output=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                log.info("Started dnsmasq service")
+            else:
+                log.warning(
+                    "systemctl start dnsmasq failed (rc=%d): %s",
+                    result.returncode,
+                    result.stderr.decode(errors="replace"),
+                )
+        except FileNotFoundError:
+            log.error("systemctl not found; cannot start dnsmasq")
+        except subprocess.TimeoutExpired:
+            log.warning("systemctl start dnsmasq timed out")
 
     def _reload_dnsmasq(self) -> None:
         """Send SIGHUP to dnsmasq to reload config (or use systemctl)."""
