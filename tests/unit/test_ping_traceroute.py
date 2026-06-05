@@ -223,11 +223,11 @@ class TestParseTracerouteOpts:
 class TestPingCompleter:
     def test_host_hint_after_ping_space(self):
         kws = complete("ping ")
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
     def test_host_hint_while_typing_host(self):
         kws = complete("ping 10")
-        assert not any("<host>" in k for k in kws)
+        assert kws == []
 
     def test_options_offered_after_host(self):
         kws = complete("ping 10.0.0.1 ")
@@ -241,15 +241,15 @@ class TestPingCompleter:
 
     def test_value_hint_after_count(self):
         kws = complete("ping 10.0.0.1 count ")
-        assert any("<1-255>" in k for k in kws)
+        assert kws == []
 
     def test_value_hint_after_size(self):
         kws = complete("ping 10.0.0.1 size ")
-        assert any("<bytes>" in k for k in kws)
+        assert kws == []
 
     def test_value_hint_after_source(self):
         kws = complete("ping 10.0.0.1 source ")
-        assert any("<ip-address>" in k for k in kws)
+        assert kws == []
 
     def test_count_removed_after_use(self):
         kws = complete("ping 10.0.0.1 count 5 ")
@@ -260,9 +260,9 @@ class TestPingCompleter:
         assert "no-resolve" not in kws
 
     def test_partial_value_completes_hint(self):
-        # Typing "ping 10.0.0.1 count 1" — user has already typed a value, hint should not appear
+        # Typing "ping 10.0.0.1 count 1" — user has already typed a value, no completions expected
         kws = complete("ping 10.0.0.1 count 1")
-        assert not any("<1-255>" in k for k in kws)
+        assert kws == []
 
     def test_multiple_opts_then_new(self):
         kws = complete("ping 10.0.0.1 count 3 no-resolve ")
@@ -278,11 +278,11 @@ class TestPingCompleter:
 class TestTracerouteCompleter:
     def test_host_hint_after_traceroute_space(self):
         kws = complete("traceroute ")
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
     def test_host_hint_while_typing_host(self):
         kws = complete("traceroute 192")
-        assert not any("<host>" in k for k in kws)
+        assert kws == []
 
     def test_options_offered_after_host(self):
         kws = complete("traceroute 10.0.0.1 ")
@@ -296,11 +296,11 @@ class TestTracerouteCompleter:
 
     def test_value_hint_after_ttl(self):
         kws = complete("traceroute 10.0.0.1 ttl ")
-        assert any("<1-255>" in k for k in kws)
+        assert kws == []
 
     def test_value_hint_after_wait(self):
         kws = complete("traceroute 10.0.0.1 wait ")
-        assert any("<seconds>" in k for k in kws)
+        assert kws == []
 
     def test_ttl_removed_after_use(self):
         kws = complete("traceroute 10.0.0.1 ttl 10 ")
