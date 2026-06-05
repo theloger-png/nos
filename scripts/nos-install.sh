@@ -121,19 +121,14 @@ ok "FRR runtime directory permissions fixed."
 # ── 2f. dnsmasq configuration ────────────────────────────────────────────────
 info "Configuring dnsmasq for NOS DHCP server…"
 install -d -m 0755 /etc/dnsmasq.d
-# Write base config only if not already present.
-if [[ ! -e /etc/dnsmasq.d/nos-base.conf ]]; then
-    cat > /etc/dnsmasq.d/nos-base.conf <<'DNSMASQ_BASE'
+cat > /etc/dnsmasq.d/nos-base.conf <<'DNSMASQ_BASE'
 # NOS base dnsmasq config — do not edit; managed by nos-install.sh
 no-hosts
 no-resolv
 port=0
 conf-dir=/etc/dnsmasq.d/,*.conf
 DNSMASQ_BASE
-    ok "  Wrote /etc/dnsmasq.d/nos-base.conf."
-else
-    warn "  /etc/dnsmasq.d/nos-base.conf already exists — skipping."
-fi
+ok "  Wrote /etc/dnsmasq.d/nos-base.conf."
 ok "dnsmasq configured."
 
 # ── 2g. sudoers rule — dnsmasq management ──────────────────────────────────────
