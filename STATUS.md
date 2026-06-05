@@ -70,12 +70,39 @@
   - `setcap cap_net_admin` automated post-install
   - `traceroute` added to apt install list
   - Package installed non-editable (not `pip install -e`)
+  - dnsmasq and isc-dhcp-client added to package list
+  - `/etc/dnsmasq.d/` permissions fixed for nos group file writes
+  - frr group membership added for human user (frr-reload.py access)
 - Managed addresses persisted across restarts: `/opt/nos/managed_addresses.json`
 - `/run/nos` permissions fixed via systemd `RuntimeDirectoryMode`/`Group` and `CAP_CHOWN`
 - `nos-apply` permissions: `UMask=0002`, `/opt/nos` group-writable
+- Rollback directory permissions: 770 (group-writable for commit/rollback)
+
+### Interface Statistics
+- Per-interface counters collected every 30 seconds by IfaceStatsWriter background thread (nos/pfe/stats.py)
+- Stats written atomically to /run/nos/stats.json (mode 0664, nos group) using IF-MIB naming for future SNMP compatibility
+- Interface names in stats.json match NOS-cli names (et0/et1 or hardware name if no alias)
+- bps/pps calculated as 30-second moving averages, last_flap tracking
+- `show interfaces`: Traffic statistics section with bytes, packets, bps, pps, errors, drops
+- `show interfaces extensive`: adds last flap timestamp and moving average annotation
+- `show interfaces <name>`: filters output to a single interface
+- `show interfaces <name> extensive/terse/detail/description`: all variants work correctly
+- Tab completion for format keywords after interface name
+
+### DHCP Server and Client
+- DHCP server via dnsmasq: per-interface pool configuration with range, gateway, optional dns-server
+- dnsmasq config files generated in /etc/dnsmasq.d/nos-<iface>-<pool>.conf
+- Interface name translation: NOS names (et1.101) translated to kernel names (ens34.101) in dnsmasq config
+- dnsmasq DNS listener disabled (port=0) to avoid conflict with systemd-resolved
+- DHCP client: `set interfaces <name> family inet dhcp` starts dhclient via sudo
+- Duplicate dhclient prevention via pgrep fallback check
+- `show dhcp server leases`, `show dhcp server statistics`, `show dhcp client leases`
+- sudoers rules for dnsmasq and dhclient management without password prompt
 
 ## Known Limitations / TODO
 - Production mode: NOS full control of interfaces (disable netplan) — not yet
+- Pipe without space before | causes error: "show configuration interfaces irb| display set" fails
+- SNMP server: planned for future phase
 
 ## Phase 2 — Planned Features
 - DHCP server: per-interface/IRB config (range, dns-server, lease-time, gateway auto-detected from IRB address)
