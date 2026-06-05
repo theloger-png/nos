@@ -587,7 +587,9 @@ class TestShowSubcommandPrefixMatching:
 
     def test_show_int_expands_to_interfaces(self, oper):
         out = oper.execute("show int")
-        assert "error" not in out.lower() or "no interface" in out.lower()
+        # The output must not start with "error:" (CLI error prefix);
+        # "Errors:" and "errors" appear legitimately in the stats section.
+        assert not out.lower().startswith("error:") or "no interface" in out.lower()
 
     def test_show_ro_expands_to_route(self, oper):
         out = oper.execute("show ro")
@@ -631,7 +633,7 @@ class TestShowSubcommandPrefixMatching:
     def test_show_combined_prefix_sho_int(self, oper):
         # Both top-level and sub-command are abbreviated
         out = oper.execute("sho int")
-        assert "error" not in out.lower() or "no interface" in out.lower()
+        assert not out.lower().startswith("error:") or "no interface" in out.lower()
 
 
 # ============================================================================

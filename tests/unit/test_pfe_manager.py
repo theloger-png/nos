@@ -15,20 +15,22 @@ from nos.pfe.stats import StatsError
 
 @contextmanager
 def _make_manager():
-    """Yield (PFEManager, mock_client, mock_fib, mock_stats) with all
-    internal constructors patched so no real sockets or threads are created."""
+    """Yield (PFEManager, mock_client, mock_fib, mock_stats, mock_writer) with
+    all internal constructors patched so no real sockets or threads are created."""
     with patch("nos.pfe.manager.PFEClient") as MockClient, \
          patch("nos.pfe.manager.FIBManager") as MockFIB, \
-         patch("nos.pfe.manager.StatsCollector") as MockStats:
+         patch("nos.pfe.manager.StatsCollector") as MockStats, \
+         patch("nos.pfe.manager.IfaceStatsWriter") as MockWriter:
 
         mock_client = MockClient.return_value
         mock_fib = MockFIB.return_value
         mock_stats = MockStats.return_value
+        mock_writer = MockWriter.return_value
         # Default ping reply
         mock_client.send_message.return_value = {"status": "ok"}
 
         mgr = PFEManager()
-        yield mgr, mock_client, mock_fib, mock_stats
+        yield mgr, mock_client, mock_fib, mock_stats, mock_writer
 
 
 @pytest.fixture
@@ -52,8 +54,14 @@ def mock_client(manager_ctx):
 
 @pytest.fixture
 def mock_stats(manager_ctx):
-    _, _, _, stats = manager_ctx
+    _, _, _, stats, _ = manager_ctx
     return stats
+
+
+@pytest.fixture
+def mock_writer(manager_ctx):
+    _, _, _, _, writer = manager_ctx
+    return writer
 
 
 # ---------------------------------------------------------------------------
@@ -64,21 +72,24 @@ class TestInit:
     def test_creates_pfe_client(self):
         with patch("nos.pfe.manager.PFEClient") as MockClient, \
              patch("nos.pfe.manager.FIBManager"), \
-             patch("nos.pfe.manager.StatsCollector"):
+             patch("nos.pfe.manager.StatsCollector"), \
+             patch("nos.pfe.manager.IfaceStatsWriter"):
             PFEManager()
             MockClient.assert_called_once_with()
 
     def test_injects_client_into_fib_manager(self):
         with patch("nos.pfe.manager.PFEClient") as MockClient, \
              patch("nos.pfe.manager.FIBManager") as MockFIB, \
-             patch("nos.pfe.manager.StatsCollector"):
+             patch("nos.pfe.manager.StatsCollector"), \
+             patch("nos.pfe.manager.IfaceStatsWriter"):
             PFEManager()
             MockFIB.assert_called_once_with(MockClient.return_value)
 
     def test_injects_client_into_stats_collector(self):
         with patch("nos.pfe.manager.PFEClient") as MockClient, \
              patch("nos.pfe.manager.FIBManager"), \
-             patch("nos.pfe.manager.StatsCollector") as MockStats:
+             patch("nos.pfe.manager.StatsCollector") as MockStats, \
+             patch("nos.pfe.manager.IfaceStatsWriter"):
             PFEManager()
             MockStats.assert_called_once_with(MockClient.return_value)
 
@@ -92,11 +103,11 @@ class TestInit:
 
 class TestProperties:
     def test_fib_returns_fib_manager(self, manager_ctx):
-        mgr, _, mock_fib, _ = manager_ctx
+        mgr, _, mock_fib, *_ = manager_ctx
         assert mgr.fib is mock_fib
 
     def test_stats_returns_stats_collector(self, manager_ctx):
-        mgr, _, _, mock_stats = manager_ctx
+        mgr, _, _, mock_stats, _ = manager_ctx
         assert mgr.stats is mock_stats
 
 
@@ -152,6 +163,17 @@ class TestStart:
         manager.start(poll_ifindexes=[1])
         assert manager.is_available()
 
+    def test_iface_stats_writer_started_unconditionally(self, manager, mock_writer):
+        manager.start()
+        mock_writer.start.assert_called_once()
+
+    def test_iface_stats_writer_started_even_when_pfe_unavailable(
+        self, manager, mock_client, mock_writer
+    ):
+        mock_client.connect.side_effect = PFEError("no socket")
+        manager.start()
+        mock_writer.start.assert_called_once()
+
 
 # ---------------------------------------------------------------------------
 # stop()
@@ -175,9 +197,13 @@ class TestStop:
     def test_safe_before_start(self, manager):
         manager.stop()   # must not raise
 
+    def test_calls_iface_stats_writer_stop(self, manager, mock_writer):
+        manager.stop()
+        mock_writer.stop.assert_called_once()
+
     def test_stop_order_polling_before_disconnect(self, manager_ctx):
         """stop_polling must be called before disconnect."""
-        mgr, mock_client, _, mock_stats = manager_ctx
+        mgr, mock_client, _, mock_stats, _ = manager_ctx
         call_order = []
         mock_stats.stop_polling.side_effect = lambda: call_order.append("stop_polling")
         mock_client.disconnect.side_effect = lambda: call_order.append("disconnect")

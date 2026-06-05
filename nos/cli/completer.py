@@ -666,6 +666,8 @@ _BGP_SUMMARY_SUBCMDS: dict[str, str] = {
 _IFACE_SUB_CMDS = {
     "terse": "One-line interface status",
     "description": "Interface descriptions",
+    "extensive": "Extended interface statistics",
+    "detail": "Detailed interface information",
 }
 
 _CONFIGURE_CMDS = {
@@ -905,14 +907,31 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # "show interfaces [terse|description]"
+        # "show interfaces [<name>] [terse|description|extensive|detail]"
         if resolved_sub == "interfaces":
             sub_rest = rest[1:]
-            sub_prefix = "" if completing_new else (sub_rest[-1] if sub_rest else "")
+
             if not sub_rest or (len(sub_rest) == 1 and not completing_new):
+                # Completing the first token: could be a format keyword or an iface name.
+                sub_prefix = sub_rest[-1] if sub_rest else ""
                 for kw, meta in _IFACE_SUB_CMDS.items():
                     if kw.startswith(sub_prefix):
                         yield Completion(kw, -len(sub_prefix), display_meta=meta)
+                for iface in self._get_iface_names():
+                    if iface.startswith(sub_prefix):
+                        yield Completion(iface, -len(sub_prefix), display_meta="Interface name")
+            elif len(sub_rest) == 1 and completing_new:
+                # First token is fully typed; if it is an iface name, offer format keywords.
+                if sub_rest[0].lower() not in _IFACE_SUB_CMDS:
+                    for kw, meta in _IFACE_SUB_CMDS.items():
+                        yield Completion(kw, display_meta=meta)
+            elif len(sub_rest) >= 2 and not completing_new:
+                # Completing second token after an iface name.
+                fmt_prefix = sub_rest[-1]
+                for kw, meta in _IFACE_SUB_CMDS.items():
+                    if kw.startswith(fmt_prefix):
+                        yield Completion(kw, -len(fmt_prefix), display_meta=meta)
+
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return

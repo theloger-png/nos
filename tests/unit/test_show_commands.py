@@ -573,6 +573,44 @@ class TestShowInterfacesCompletion:
         assert "system" not in kws
         assert "routing-options" not in kws
 
+    def test_show_interfaces_space_offers_extensive(self):
+        kws = complete_oper("show interfaces ")
+        assert "extensive" in kws
+
+    def test_show_interfaces_space_offers_detail(self):
+        kws = complete_oper("show interfaces ")
+        assert "detail" in kws
+
+    def test_show_interfaces_name_space_offers_format_keywords(self):
+        # After a valid interface name, format keywords must be offered.
+        kws = complete_oper("show interfaces et0 ")
+        assert "extensive" in kws
+        assert "terse" in kws
+        assert "detail" in kws
+        assert "description" in kws
+
+    def test_show_interfaces_name_space_offers_pipe(self):
+        kws = complete_oper("show interfaces et0 ")
+        assert "|" in kws
+
+    def test_show_interfaces_name_partial_format_completes(self):
+        # "show interfaces et0 ext" should complete to "extensive"
+        kws = complete_oper("show interfaces et0 ext")
+        assert "extensive" in kws
+        assert "terse" not in kws
+
+    def test_show_interfaces_format_after_name_no_config_sections(self):
+        # Format completion must not bleed config-tree completions
+        kws = complete_oper("show interfaces et0 ")
+        assert "system" not in kws
+        assert "routing-options" not in kws
+
+    def test_show_interfaces_format_keyword_space_no_format_repeat(self):
+        # After "terse" is complete, no format keywords are offered again
+        kws = complete_oper("show interfaces terse ")
+        assert "extensive" not in kws
+        assert "description" not in kws
+
 
 # ============================================================================
 # show configuration — handler (operational mode)

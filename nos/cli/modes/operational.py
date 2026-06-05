@@ -5,6 +5,8 @@ traceroute, configure.
 """
 from __future__ import annotations
 
+import datetime as _dt
+import json
 import logging
 import subprocess
 from typing import Optional
@@ -39,6 +41,66 @@ _NUD_STATE_NAMES: dict[int, str] = {
 }
 
 _LOG = logging.getLogger(__name__)
+
+_STATS_JSON_PATH = "/run/nos/stats.json"
+
+
+def _load_iface_stats() -> "dict[str, dict]":
+    """Load /run/nos/stats.json and return the interfaces dict, or {} on error."""
+    try:
+        with open(_STATS_JSON_PATH) as fh:
+            data = json.load(fh)
+        return data.get("interfaces", {})
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _fmt_bps(bps: float) -> str:
+    if bps >= 1e9:
+        return f"{bps / 1e9:.2f} Gbps"
+    if bps >= 1e6:
+        return f"{bps / 1e6:.2f} Mbps"
+    if bps >= 1e3:
+        return f"{bps / 1e3:.2f} Kbps"
+    return f"{bps:.1f} bps"
+
+
+def _fmt_pps(pps: float) -> str:
+    return f"{pps:.2f} pps"
+
+
+def _fmt_timestamp(ts: float) -> str:
+    dt = _dt.datetime.fromtimestamp(ts, tz=_dt.timezone.utc)
+    return dt.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _format_iface_stats(stats: dict) -> list[str]:
+    """Return Traffic Statistics and Errors lines for one interface."""
+    in_b   = stats.get("ifInOctets",     0)
+    out_b  = stats.get("ifOutOctets",    0)
+    in_p   = stats.get("ifInUcastPkts",  0)
+    out_p  = stats.get("ifOutUcastPkts", 0)
+    bps_in  = stats.get("bpsIn",  0.0)
+    bps_out = stats.get("bpsOut", 0.0)
+    pps_in  = stats.get("ppsIn",  0.0)
+    pps_out = stats.get("ppsOut", 0.0)
+    in_e   = stats.get("ifInErrors",    0)
+    out_e  = stats.get("ifOutErrors",   0)
+    in_d   = stats.get("ifInDiscards",  0)
+    out_d  = stats.get("ifOutDiscards", 0)
+    return [
+        "  Traffic statistics:",
+        f"    Input  bytes:   {in_b:>15}  ({_fmt_bps(bps_in):>10})",
+        f"    Output bytes:   {out_b:>15}  ({_fmt_bps(bps_out):>10})",
+        f"    Input  packets: {in_p:>15}  ({_fmt_pps(pps_in):>10})",
+        f"    Output packets: {out_p:>15}  ({_fmt_pps(pps_out):>10})",
+        "  Errors:",
+        f"    Input  errors:  {in_e:>15}",
+        f"    Output errors:  {out_e:>15}",
+        f"    Input  drops:   {in_d:>15}",
+        f"    Output drops:   {out_d:>15}",
+    ]
+
 
 from rich.console import Console
 from rich.table import Table
@@ -168,6 +230,9 @@ def _parse_traceroute_opts(
                 return [], f"traceroute: unknown option {tok!r}"
         i += 1
     return flags, None
+
+
+_IFACE_FORMAT_KEYWORDS = frozenset({"terse", "description", "extensive", "detail"})
 
 
 class OperationalMode:
@@ -456,27 +521,41 @@ class OperationalMode:
         return self._show_ipv6_neighbors(args[1:])
 
     def _show_interfaces(self, args: list[str]) -> str:
-        sub = args[0].lower() if args else ""
+        iface_filter: Optional[str] = None
+        sub = ""
+        for arg in args:
+            lower = arg.lower()
+            if lower in _IFACE_FORMAT_KEYWORDS:
+                sub = lower
+            elif iface_filter is None:
+                iface_filter = lower
 
         if sub == "terse":
-            rows = self._iface_rows()
+            rows = self._iface_rows(include_lo=(iface_filter == "lo"))
             if rows is None:
                 rows = self._iface_rows_config()
+            if iface_filter:
+                rows = [r for r in rows if r["name"].lower() == iface_filter]
             return self._render_terse(rows)
 
         if sub == "description":
-            rows = self._iface_rows()
+            rows = self._iface_rows(include_lo=(iface_filter == "lo"))
             if rows is None:
                 rows = self._iface_rows_config()
+            if iface_filter:
+                rows = [r for r in rows if r["name"].lower() == iface_filter]
             return self._render_description(rows)
 
-        # ── verbose format (existing) ──────────────────────────────────────
+        extensive = (sub == "extensive")
+
+        # ── verbose format ─────────────────────────────────────────────────
         if IPRoute is None:
             _LOG.warning("pyroute2 not available; showing config-only interface data")
             return self._show_interfaces_config_only()
 
         cfg = self.store.get_running()
         ifaces_cfg = cfg.get("interfaces", {})
+        iface_stats = _load_iface_stats()
 
         try:
             with IPRoute() as ipr:
@@ -501,7 +580,7 @@ class OperationalMode:
                     prefix = addr["prefixlen"]
                     addr6_map.setdefault(idx, []).append(f"{ip}/{prefix}")
 
-        include_lo = "lo" in args
+        include_lo = iface_filter == "lo" and not extensive
         alias_map = self._get_alias_map()
 
         lines: list[str] = []
@@ -513,6 +592,10 @@ class OperationalMode:
                 continue
 
             display_name = self._iface_display(name, alias_map)
+
+            if iface_filter and display_name.lower() != iface_filter and name.lower() != iface_filter:
+                continue
+
             idx = link["index"]
             kernel_mtu = link.get_attr("IFLA_MTU") or 1500
             operstate = (link.get_attr("IFLA_OPERSTATE") or "UNKNOWN").upper()
@@ -537,6 +620,40 @@ class OperationalMode:
                 lines.append(f"  Inet  {addr_str}")
             for addr_str in addr6_map.get(idx, []):
                 lines.append(f"  Inet6  {addr_str}")
+
+            stats_entry = iface_stats.get(display_name, iface_stats.get(name, {}))
+            lines.append("")
+            if extensive:
+                lines.append("  Traffic statistics:             [30-second moving average]")
+                in_b   = stats_entry.get("ifInOctets",     0)
+                out_b  = stats_entry.get("ifOutOctets",    0)
+                in_p   = stats_entry.get("ifInUcastPkts",  0)
+                out_p  = stats_entry.get("ifOutUcastPkts", 0)
+                bps_in  = stats_entry.get("bpsIn",  0.0)
+                bps_out = stats_entry.get("bpsOut", 0.0)
+                pps_in  = stats_entry.get("ppsIn",  0.0)
+                pps_out = stats_entry.get("ppsOut", 0.0)
+                in_e  = stats_entry.get("ifInErrors",    0)
+                out_e = stats_entry.get("ifOutErrors",   0)
+                in_d  = stats_entry.get("ifInDiscards",  0)
+                out_d = stats_entry.get("ifOutDiscards", 0)
+                lines += [
+                    f"    Input  bytes:   {in_b:>15}  ({_fmt_bps(bps_in):>10})",
+                    f"    Output bytes:   {out_b:>15}  ({_fmt_bps(bps_out):>10})",
+                    f"    Input  packets: {in_p:>15}  ({_fmt_pps(pps_in):>10})",
+                    f"    Output packets: {out_p:>15}  ({_fmt_pps(pps_out):>10})",
+                    "  Errors:",
+                    f"    Input  errors:  {in_e:>15}",
+                    f"    Output errors:  {out_e:>15}",
+                    f"    Input  drops:   {in_d:>15}",
+                    f"    Output drops:   {out_d:>15}",
+                ]
+                last_flap = stats_entry.get("last_flap")
+                flap_str = _fmt_timestamp(last_flap) if last_flap else "never"
+                lines.append(f"  Last flap: {flap_str}")
+            else:
+                lines.extend(_format_iface_stats(stats_entry))
+
             lines.append("")
 
         if not lines:

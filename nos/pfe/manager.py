@@ -6,7 +6,7 @@ from pyroute2 import IPRoute
 
 from nos.pfe.fib import FIBManager
 from nos.pfe.ipc import PFEClient, PFEError
-from nos.pfe.stats import StatsCollector, StatsError
+from nos.pfe.stats import IfaceStatsWriter, StatsCollector, StatsError
 from nos.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -34,6 +34,7 @@ class PFEManager:
         self._client = PFEClient()
         self._fib = FIBManager(self._client)
         self._stats = StatsCollector(self._client)
+        self._iface_stats_writer = IfaceStatsWriter()
         self._available: bool = False
 
     # ── properties ───────────────────────────────────────────────────────────
@@ -53,7 +54,10 @@ class PFEManager:
 
         Non-fatal: if the PFE socket is not reachable, a warning is logged
         and the manager continues in kernel-only mode (is_available() == False).
+        The kernel stats writer starts unconditionally.
         """
+        self._iface_stats_writer.start()
+
         try:
             self._client.connect()
             self._available = True
@@ -73,6 +77,7 @@ class PFEManager:
 
     def stop(self) -> None:
         """Stop stats polling and disconnect from the PFE."""
+        self._iface_stats_writer.stop()
         self._stats.stop_polling()
         self._client.disconnect()
         self._available = False
