@@ -201,11 +201,12 @@ class TestCompleteConfigTokens:
         # Should NOT contain non-matching keywords
         assert "interfaces" not in kws
 
-    def test_dynamic_child_hint_appears(self):
-        # Under "interfaces", should show dynamic hint <interface-name>
+    def test_dynamic_child_no_hint_when_no_store(self):
+        # Dynamic nodes return no completions when there is no config store
         results = complete_config_tokens([], True, ["interfaces"])
         kws = [c.text for c in results]
-        assert "<interface-name>" in kws
+        assert "<interface-name>" not in kws
+        assert kws == []
 
     def test_edit_path_shifts_start(self):
         # edit_path=["interfaces", "eth0"] → completions are interface keywords
@@ -243,13 +244,13 @@ class TestOperationalCompleter:
         assert "interfaces" in kws
         assert "route" not in kws
 
-    def test_ping_shows_host_hint(self):
+    def test_ping_space_returns_empty(self):
         kws = complete("ping ", CLIMode.OPERATIONAL)
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
-    def test_traceroute_shows_host_hint(self):
+    def test_traceroute_space_returns_empty(self):
         kws = complete("traceroute ", CLIMode.OPERATIONAL)
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
     # Abbreviated command dispatch
     def test_abbreviated_command_dispatches_subcommands(self):
@@ -281,15 +282,15 @@ class TestOperationalCompleter:
         assert "terse" in kws
         assert "description" not in kws
 
-    def test_ambiguous_command_prefix_yields_nothing(self):
-        # 'e' matches both 'exit' and (in configure) multiple — in operational: exit only
-        # 't' matches traceroute only → should give subcommands
+    def test_abbreviated_traceroute_host_position_returns_empty(self):
+        # 'tr ' resolves to traceroute; at the host position no completions are offered
         kws = complete("tr ", CLIMode.OPERATIONAL)
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
-    def test_abbreviated_ping_dispatches(self):
+    def test_abbreviated_ping_host_position_returns_empty(self):
+        # 'pi ' resolves to ping; at the host position no completions are offered
         kws = complete("pi ", CLIMode.OPERATIONAL)
-        assert any("<host>" in k for k in kws)
+        assert kws == []
 
 
 # ============================================================================
@@ -313,13 +314,15 @@ class TestConfigureCommandKeywords:
         assert "confirmed" in kws
         assert "check" in kws
 
-    def test_commit_confirmed_shows_minutes_hint(self):
+    def test_commit_confirmed_returns_empty(self):
+        # minutes argument is free-form; no placeholder completions are offered
         kws = complete("commit confirmed ", CLIMode.CONFIGURE)
-        assert any("<minutes>" in k for k in kws)
+        assert kws == []
 
-    def test_rollback_shows_range_hint(self):
+    def test_rollback_returns_empty(self):
+        # rollback number is free-form; no placeholder completions are offered
         kws = complete("rollback ", CLIMode.CONFIGURE)
-        assert any("<0-49>" in k for k in kws)
+        assert kws == []
 
 
 # ============================================================================
@@ -338,9 +341,10 @@ class TestConfigureSetCompletions:
         assert "host-name" in kws
         assert "ntp" in kws
 
-    def test_set_interfaces_space_shows_dynamic_hint(self):
+    def test_set_interfaces_space_no_hint_without_store(self):
+        # No config store → no real interface names and no placeholder hints
         kws = complete("set interfaces ", CLIMode.CONFIGURE)
-        assert "<interface-name>" in kws
+        assert "<interface-name>" not in kws
 
     def test_set_interface_speed_shows_enums(self):
         kws = complete("set interfaces eth0 speed ", CLIMode.CONFIGURE)
@@ -359,9 +363,10 @@ class TestConfigureSetCompletions:
         assert "isis" in kws
         assert "bgp" in kws
 
-    def test_set_bgp_group_shows_hint(self):
+    def test_set_bgp_group_no_hint_without_store(self):
+        # No config store → no real group names and no placeholder hints
         kws = complete("set protocols bgp group ", CLIMode.CONFIGURE)
-        assert "<group-name>" in kws
+        assert "<group-name>" not in kws
 
     def test_set_bgp_group_type_enum(self):
         kws = complete("set protocols bgp group IBGP type ", CLIMode.CONFIGURE)
@@ -417,9 +422,9 @@ class TestAbbreviatedPrefixCompletion:
         assert "interfaces" in kws
 
     def test_abbreviated_set_with_abbreviated_section(self):
-        # 'set int ' should show interface-level completions (abbreviated walk token)
+        # 'set int ' resolves interfaces; without a store no real names are available
         kws = complete("set int ", CLIMode.CONFIGURE)
-        assert "<interface-name>" in kws
+        assert "<interface-name>" not in kws
 
     def test_abbreviated_set_deep_walk(self):
         # Abbreviated walk: 'int' → 'interfaces', 'uni' → 'unit', 'fam' → 'family'
@@ -460,8 +465,9 @@ class TestAbbreviatedPrefixCompletion:
         assert "host-name" not in kws
 
     def test_abbreviated_rollback_dispatches(self):
+        # rollback number is free-form; abbreviated command resolves but yields nothing
         kws = complete("rol ", CLIMode.CONFIGURE)
-        assert any("<0-49>" in k for k in kws)
+        assert kws == []
 
     def test_abbreviated_commit_dispatches(self):
         kws = complete("com ", CLIMode.CONFIGURE)
@@ -518,9 +524,11 @@ class TestDottedUnitCompletion:
         assert "inet6" in kws
         assert "ethernet-switching" in kws
 
-    def test_dotted_unit_vlan_id_shows_hint(self):
+    def test_dotted_unit_vlan_id_no_hint(self):
+        # vlan-id is a free-form value; no placeholder completion is offered
         kws = complete("set interfaces ens34.101 vlan-id ", CLIMode.CONFIGURE)
-        assert "<1-4094>" in kws
+        assert "<1-4094>" not in kws
+        assert kws == []
 
     def test_dotted_unit_family_inet_shows_address(self):
         kws = complete("set interfaces ens34.101 family inet ", CLIMode.CONFIGURE)
