@@ -337,3 +337,108 @@ def test_family_inet_dhcp_xor_static() -> None:
         FamilyInet.model_validate(
             {"dhcp": True, "address": {"192.168.1.1/24": {}}}
         )
+
+
+# ---------------------------------------------------------------------------
+# DHCP Client
+# ---------------------------------------------------------------------------
+
+def test_apply_client_unit_dhcp(tmp_driver: DnsmasqDriver) -> None:
+    """apply_client should detect dhcp on interface units (e.g., irb.101)."""
+    config = {
+        "interfaces": {
+            "irb": {
+                "unit": {
+                    "101": {
+                        "family_inet": {"dhcp": True}
+                    }
+                }
+            }
+        }
+    }
+    mock_start = MagicMock()
+    with patch.object(tmp_driver, "_start_dhclient", mock_start):
+        with patch.object(tmp_driver, "_dhclient_running", return_value=False):
+            tmp_driver.apply_client(config)
+
+    # Check that _start_dhclient was called with the correct interface name
+    mock_start.assert_called_once()
+    call_args = mock_start.call_args
+    assert call_args[0][0] == "irb.101"
+
+
+def test_apply_client_main_and_unit_dhcp(tmp_driver: DnsmasqDriver) -> None:
+    """apply_client should handle both main interface and unit dhcp."""
+    config = {
+        "interfaces": {
+            "eth0": {
+                "family_inet": {"dhcp": True},
+                "unit": {
+                    "100": {
+                        "family_inet": {"dhcp": True}
+                    }
+                }
+            }
+        }
+    }
+    mock_start = MagicMock()
+    with patch.object(tmp_driver, "_start_dhclient", mock_start):
+        with patch.object(tmp_driver, "_dhclient_running", return_value=False):
+            tmp_driver.apply_client(config)
+
+    # Should be called for both eth0 and eth0.100
+    assert mock_start.call_count == 2
+    calls = [call[0][0] for call in mock_start.call_args_list]
+    assert "eth0" in calls
+    assert "eth0.100" in calls
+
+
+def test_apply_client_multiple_units(tmp_driver: DnsmasqDriver) -> None:
+    """apply_client should handle multiple units with dhcp."""
+    config = {
+        "interfaces": {
+            "irb": {
+                "unit": {
+                    "101": {"family_inet": {"dhcp": True}},
+                    "102": {"family_inet": {"dhcp": True}},
+                }
+            }
+        }
+    }
+    mock_start = MagicMock()
+    with patch.object(tmp_driver, "_start_dhclient", mock_start):
+        with patch.object(tmp_driver, "_dhclient_running", return_value=False):
+            tmp_driver.apply_client(config)
+
+    # Should be called for both irb.101 and irb.102
+    assert mock_start.call_count == 2
+    calls = [call[0][0] for call in mock_start.call_args_list]
+    assert "irb.101" in calls
+    assert "irb.102" in calls
+
+
+def test_apply_client_underscore_conversion(tmp_driver: DnsmasqDriver) -> None:
+    """apply_client should convert underscores to hyphens in interface names."""
+    config = {
+        "interfaces": {
+            "bond_0": {
+                "family_inet": {"dhcp": True}
+            },
+            "irb": {
+                "unit": {
+                    "101": {
+                        "family_inet": {"dhcp": True}
+                    }
+                }
+            }
+        }
+    }
+    mock_start = MagicMock()
+    with patch.object(tmp_driver, "_start_dhclient", mock_start):
+        with patch.object(tmp_driver, "_dhclient_running", return_value=False):
+            tmp_driver.apply_client(config)
+
+    # Should convert bond_0 to bond-0, and irb.101 should be as-is
+    calls = [call[0][0] for call in mock_start.call_args_list]
+    assert "bond-0" in calls
+    assert "irb.101" in calls

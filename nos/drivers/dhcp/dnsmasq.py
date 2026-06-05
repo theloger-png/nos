@@ -181,9 +181,20 @@ class DnsmasqDriver:
 
         for iface_name, iface_cfg in interfaces_cfg.items():
             cfg = iface_cfg or {}
+
+            # Check unit 0 (main interface)
             inet = cfg.get("family_inet") or {}
             if isinstance(inet, dict) and inet.get("dhcp"):
                 dhcp_ifaces.add(iface_name.replace("_", "-"))
+
+            # Check all subunits
+            units = cfg.get("unit") or {}
+            for unit_id_str, unit_cfg in units.items():
+                unit_cfg = unit_cfg or {}
+                unit_inet = unit_cfg.get("family_inet") or {}
+                if isinstance(unit_inet, dict) and unit_inet.get("dhcp"):
+                    iface_kernel_name = f"{iface_name.replace('_', '-')}.{unit_id_str}"
+                    dhcp_ifaces.add(iface_kernel_name)
 
         # Stop dhclient on interfaces that no longer need it.
         for pidfile in self._pidfile_dir.glob("dhclient-*.pid"):
