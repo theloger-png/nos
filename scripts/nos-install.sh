@@ -144,6 +144,8 @@ port=0
 conf-dir=/etc/dnsmasq.d/,*.conf
 DNSMASQ_BASE
 ok "  Wrote /etc/dnsmasq.d/nos-base.conf."
+chown root:nos /etc/dnsmasq.d/
+chmod 775 /etc/dnsmasq.d/
 ok "dnsmasq configured."
 
 # ── 2g. sudoers rule — dnsmasq management ──────────────────────────────────────
