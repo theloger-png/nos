@@ -31,7 +31,9 @@ apt-get install -y --no-install-recommends \
     clang llvm libbpf-dev linux-tools-common \
     libmnl-dev libcjson-dev libsystemd-dev \
     python3.12 python3.12-venv python3-pip \
-    traceroute
+    traceroute \
+    dnsmasq \
+    isc-dhcp-client
 ok "System packages installed."
 
 # ── 2. system user ─────────────────────────────────────────────────────────────
@@ -116,13 +118,30 @@ chown frr:frr /var/run/frr
 chmod 0775 /var/run/frr
 ok "FRR runtime directory permissions fixed."
 
+# ── 2f. dnsmasq configuration ────────────────────────────────────────────────
+info "Configuring dnsmasq for NOS DHCP server…"
+install -d -m 0755 /etc/dnsmasq.d
+# Write base config only if not already present.
+if [[ ! -e /etc/dnsmasq.d/nos-base.conf ]]; then
+    cat > /etc/dnsmasq.d/nos-base.conf <<'DNSMASQ_BASE'
+# NOS base dnsmasq config — do not edit; managed by nos-install.sh
+no-hosts
+no-resolv
+conf-dir=/etc/dnsmasq.d/,*.conf
+DNSMASQ_BASE
+    ok "  Wrote /etc/dnsmasq.d/nos-base.conf."
+else
+    warn "  /etc/dnsmasq.d/nos-base.conf already exists — skipping."
+fi
+ok "dnsmasq configured."
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
 chown root:"${NOS_USER}" /opt/nos
 chmod 775 /opt/nos
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
-install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
+install -d -m 0770 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"
 install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_STATEDIR}"
 install -d "${NOS_RUNDIR}"
@@ -209,6 +228,8 @@ for unit in "${REPO_ROOT}"/systemd/*.service; do
     systemctl enable "${name}"
     ok "  Enabled ${name}."
 done
+systemctl enable dnsmasq
+ok "  Enabled dnsmasq."
 
 # ── summary ───────────────────────────────────────────────────────────────────
 cat <<SUMMARY

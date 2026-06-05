@@ -86,6 +86,24 @@ def build_config_tree() -> ConfigNode:
     """Return the root ConfigNode of the full JunOS config hierarchy."""
 
     # ── system ─────────────────────────────────────────────────────────────
+    _dhcp_pool_inner = _n("DHCP pool configuration", {
+        "range": _n("Address pool range", {
+            "low": _v("Lowest IP address in range", "<ip-address>"),
+            "high": _v("Highest IP address in range", "<ip-address>"),
+        }),
+        "gateway": _v("Default gateway for clients", "<ip-address>"),
+        "dns-server": _v("DNS server for clients", "<ip-address>"),
+    })
+
+    _dhcp_local_server_node = _n("DHCP local server", {
+        "interface": _d("Interface serving DHCP", "<interface-name>",
+                         _n("Interface DHCP config", {
+                             "pool": _d("Pool name", "<pool-name>",
+                                        _p("Attach pool to interface")),
+                         })),
+        "pool": _d("DHCP address pool", "<pool-name>", _dhcp_pool_inner),
+    })
+
     system_node = _n("System parameters", {
         "host-name": _v("System hostname"),
         "domain-name": _v("DNS domain name"),
@@ -111,6 +129,9 @@ def build_config_tree() -> ConfigNode:
             })),
         }),
         "interface-rename": _p("Rename physical interfaces to et0, et1, …"),
+        "services": _n("System services", {
+            "dhcp-local-server": _dhcp_local_server_node,
+        }),
     })
 
     # ── interfaces ─────────────────────────────────────────────────────────
@@ -148,6 +169,7 @@ def build_config_tree() -> ConfigNode:
         "family": _n("Address family", {
             "inet": _n("IPv4 family (routed port)", {
                 "address": _d("IPv4 address", "<ip/prefix>", inet_addr_node),
+                "dhcp": _p("Enable DHCP client mode"),
             }),
             "inet6": _n("IPv6 family (routed port)", {
                 "address": _d("IPv6 address", "<ipv6/prefix>",
@@ -588,6 +610,7 @@ _TRACEROUTE_OPTS: dict[str, tuple[Optional[str], str]] = {
 
 _SHOW_OPER_ARGS = {
     "arp": "Show ARP table",
+    "dhcp": "Show DHCP server and client information",
     "ipv6": "Show IPv6 information",
     "interfaces": "Show interface status and counters",
     "ethernet-switching": "Show Ethernet switching table (bridge FDB / MAC table)",
@@ -978,6 +1001,47 @@ class NOSCompleter(Completer):
         if resolved_sub == "configuration":
             config_rest = rest[1:]
             yield from complete_config_tokens(config_rest, completing_new, [], self.store)
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # "show dhcp [server leases [interface <iface>] | server statistics | client leases]"
+        if resolved_sub == "dhcp":
+            dhcp_rest = rest[1:]
+            dhcp_prefix = "" if completing_new else (dhcp_rest[-1] if dhcp_rest else "")
+            _DHCP_MAIN = {"server": "Show DHCP server info", "client": "Show DHCP client info"}
+            if not dhcp_rest or (len(dhcp_rest) == 1 and not completing_new):
+                for kw, meta in _DHCP_MAIN.items():
+                    if kw.startswith(dhcp_prefix):
+                        yield Completion(kw, -len(dhcp_prefix), display_meta=meta)
+            elif dhcp_rest[0].lower() == "server":
+                srv_rest = dhcp_rest[1:]
+                srv_prefix = "" if completing_new else (srv_rest[-1] if srv_rest else "")
+                _DHCP_SRV = {
+                    "leases": "Show active DHCP leases",
+                    "statistics": "Show per-pool lease counts",
+                }
+                if not srv_rest or (len(srv_rest) == 1 and not completing_new):
+                    for kw, meta in _DHCP_SRV.items():
+                        if kw.startswith(srv_prefix):
+                            yield Completion(kw, -len(srv_prefix), display_meta=meta)
+                elif srv_rest[0].lower() == "leases":
+                    lse_rest = srv_rest[1:]
+                    lse_prefix = "" if completing_new else (lse_rest[-1] if lse_rest else "")
+                    if not lse_rest or (len(lse_rest) == 1 and not completing_new):
+                        if "interface".startswith(lse_prefix):
+                            yield Completion("interface", -len(lse_prefix),
+                                             display_meta="Filter by interface")
+                    elif completing_new and lse_rest[-1].lower() == "interface":
+                        for iface in self._get_iface_names():
+                            yield Completion(iface, display_meta="Interface name")
+            elif dhcp_rest[0].lower() == "client":
+                cli_rest = dhcp_rest[1:]
+                cli_prefix = "" if completing_new else (cli_rest[-1] if cli_rest else "")
+                if not cli_rest or (len(cli_rest) == 1 and not completing_new):
+                    if "leases".startswith(cli_prefix):
+                        yield Completion("leases", -len(cli_prefix),
+                                         display_meta="Show client DHCP leases")
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return

@@ -119,6 +119,61 @@ class LoginConfig(BaseModel):
     user: Dict[str, UserConfig] = {}
 
 
+# ---------------------------------------------------------------------------
+# DHCP models
+# ---------------------------------------------------------------------------
+
+class DhcpPoolRange(BaseModel):
+    low: Optional[str] = None
+    high: Optional[str] = None
+
+    @field_validator("low", "high")
+    @classmethod
+    def validate_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "DHCP pool range")
+        return v
+
+
+class DhcpPoolConfig(BaseModel):
+    range: Optional[DhcpPoolRange] = None
+    gateway: Optional[str] = None
+    dns_server: Optional[str] = None
+
+    @field_validator("gateway", "dns_server")
+    @classmethod
+    def validate_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "DHCP pool address")
+        return v
+
+
+class DhcpInterfaceConfig(BaseModel):
+    pool: List[str] = []
+
+    @field_validator("pool", mode="before")
+    @classmethod
+    def coerce_pool(cls, v: Any) -> List[str]:
+        if isinstance(v, dict):
+            return [k for k, val in v.items() if val]
+        if isinstance(v, str):
+            return [v]
+        return list(v) if v else []
+
+
+class DhcpLocalServerConfig(BaseModel):
+    interface: Dict[str, DhcpInterfaceConfig] = {}
+    pool: Dict[str, DhcpPoolConfig] = {}
+
+
+class ServicesConfig(BaseModel):
+    dhcp_local_server: Optional[DhcpLocalServerConfig] = None
+
+
+# ---------------------------------------------------------------------------
+# System models (continued)
+# ---------------------------------------------------------------------------
+
 class SystemConfig(BaseModel):
     host_name: Optional[str] = None
     domain_name: Optional[str] = None
@@ -127,6 +182,7 @@ class SystemConfig(BaseModel):
     login: Optional[LoginConfig] = None
     syslog: Optional[SyslogConfig] = None
     interface_rename: bool = False
+    services: Optional[ServicesConfig] = None
 
     @field_validator("name_server", mode="before")
     @classmethod
@@ -152,11 +208,18 @@ def _validate_address_dict_keys(v: Any, family: str) -> Any:
 
 class FamilyInet(BaseModel):
     address: Dict[str, InetAddress] = {}
+    dhcp: bool = False
 
     @field_validator("address", mode="before")
     @classmethod
     def validate_address_keys(cls, v: Any) -> Any:
         return _validate_address_dict_keys(v, "inet")
+
+    @model_validator(mode="after")
+    def check_dhcp_xor_static(self) -> "FamilyInet":
+        if self.dhcp and self.address:
+            raise ValueError("family inet dhcp and static address are mutually exclusive")
+        return self
 
 
 class FamilyInet6(BaseModel):

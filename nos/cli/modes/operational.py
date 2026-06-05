@@ -122,7 +122,7 @@ console = Console()
 _parser = CommandParser()
 
 _SHOW_SUBCMDS: list[str] = [
-    "arp", "bgp", "configuration", "ethernet-switching", "forwarding", "interfaces",
+    "arp", "bgp", "configuration", "dhcp", "ethernet-switching", "forwarding", "interfaces",
     "ipv6", "isis", "route", "system", "vlans",
 ]
 
@@ -306,6 +306,8 @@ class OperationalMode:
         match sub:
             case "arp":
                 output = self._show_arp(sub_args)
+            case "dhcp":
+                output = self._show_dhcp(sub_args)
             case "ipv6":
                 output = self._show_ipv6(sub_args)
             case "interfaces":
@@ -336,6 +338,7 @@ class OperationalMode:
         return (
             "Possible completions:\n"
             "  arp                 Show ARP table\n"
+            "  dhcp                Show DHCP server and client information\n"
             "  ipv6                Show IPv6 information\n"
             "  interfaces          Show interface status and counters\n"
             "  ethernet-switching  Show Ethernet switching table (bridge FDB / MAC table)\n"
@@ -877,6 +880,108 @@ class OperationalMode:
             f"show isis {sub} — requires FRR isisd integration.\n"
             "Use 'vtysh -c \"show isis adjacency\"' for current state.\n"
         )
+
+    # ------------------------------------------------------------------
+    # show dhcp
+    # ------------------------------------------------------------------
+
+    def _show_dhcp(self, args: list[str]) -> str:
+        from nos.drivers.dhcp.dnsmasq import DnsmasqDriver
+        drv = DnsmasqDriver()
+
+        if not args:
+            return (
+                "Possible completions:\n"
+                "  server leases             Show active DHCP server leases\n"
+                "  server leases interface   Filter leases by interface\n"
+                "  server statistics         Show per-pool lease counts\n"
+                "  client leases             Show DHCP client leases\n"
+            )
+
+        sub = args[0].lower()
+        rest = args[1:]
+
+        if sub == "server":
+            if not rest:
+                return (
+                    "Possible completions:\n"
+                    "  leases      Show active DHCP server leases\n"
+                    "  statistics  Show per-pool lease counts\n"
+                )
+            action = rest[0].lower()
+            if action == "leases":
+                iface_filter: Optional[str] = None
+                i = 1
+                while i < len(rest):
+                    if rest[i].lower() == "interface" and i + 1 < len(rest):
+                        iface_filter = rest[i + 1]
+                        i += 2
+                    else:
+                        return f"error: unexpected argument '{rest[i]}'"
+                leases = drv.parse_server_leases(iface_filter=iface_filter)
+                return self._render_dhcp_server_leases(leases, iface_filter)
+            if action == "statistics":
+                cfg = self.store.get_running()
+                stats = drv.server_statistics(cfg)
+                return self._render_dhcp_server_statistics(stats)
+            return f"error: unknown dhcp server sub-command: {action!r}"
+
+        if sub == "client":
+            if not rest or rest[0].lower() == "leases":
+                leases = drv.parse_client_leases()
+                return self._render_dhcp_client_leases(leases)
+            return f"error: unknown dhcp client sub-command: {rest[0]!r}"
+
+        return f"error: unknown dhcp sub-command: {sub!r}"
+
+    def _render_dhcp_server_leases(
+        self, leases: list[dict], iface_filter: Optional[str]
+    ) -> str:
+        if not leases:
+            header = "No active DHCP server leases"
+            if iface_filter:
+                header += f" on {iface_filter}"
+            return header + "."
+        hdr = f"{'Expiry':<12}{'MAC Address':<18}{'IP Address':<16}{'Hostname':<20}Client-ID"
+        lines = [hdr]
+        for lease in leases:
+            expiry = lease.get("expiry", "")
+            # Convert Unix timestamp to readable if numeric
+            if expiry.isdigit():
+                import datetime
+                expiry = datetime.datetime.fromtimestamp(
+                    int(expiry), tz=datetime.timezone.utc
+                ).strftime("%Y-%m-%d %H:%M")
+            lines.append(
+                f"{expiry:<12}{lease.get('mac',''):<18}"
+                f"{lease.get('ip',''):<16}{lease.get('hostname',''):<20}"
+                f"{lease.get('client_id','')}"
+            )
+        return "\n".join(lines)
+
+    def _render_dhcp_server_statistics(self, stats: list[dict]) -> str:
+        if not stats:
+            return "No DHCP pools configured."
+        hdr = f"{'Pool':<20}{'Interface':<14}{'Range Low':<16}{'Range High':<16}Active"
+        lines = [hdr]
+        for s in stats:
+            lines.append(
+                f"{s['pool']:<20}{s['iface']:<14}{s['low']:<16}{s['high']:<16}{s['active']}"
+            )
+        return "\n".join(lines)
+
+    def _render_dhcp_client_leases(self, leases: list[dict]) -> str:
+        if not leases:
+            return "No DHCP client leases found."
+        hdr = f"{'Interface':<14}{'IP Address':<16}{'Subnet Mask':<16}{'Gateway':<16}Expiry"
+        lines = [hdr]
+        for lease in leases:
+            lines.append(
+                f"{lease.get('iface',''):<14}{lease.get('ip',''):<16}"
+                f"{lease.get('mask',''):<16}{lease.get('gateway',''):<16}"
+                f"{lease.get('expiry','')}"
+            )
+        return "\n".join(lines)
 
     def _vlan_iface_map(self, cfg: dict) -> dict[str, list[str]]:
         """Build {vlan_name: sorted([iface.unit, ...])} from config + live bridge data."""

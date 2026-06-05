@@ -36,11 +36,13 @@ class ConfigApplier:
         frr_driver: Any,  # expected: FRRClient — must have write_frr_conf(str)
         pfe_manager: PFEManager,
         store: Optional["ConfigStore"] = None,
+        dhcp_driver: Optional[Any] = None,  # DnsmasqDriver or compatible
     ) -> None:
         self._kernel = kernel_driver
         self._frr = frr_driver
         self._pfe = pfe_manager
         self._store = store
+        self._dhcp = dhcp_driver
         self._renderer = FRRRenderer()
         self._pending_reverse_alias_map: Optional[dict] = None
 
@@ -70,6 +72,16 @@ class ConfigApplier:
 
         if len(failed) == len(handlers):
             raise ConfigApplyError(f"All config sections failed: {failed}")
+
+        if self._dhcp is not None:
+            try:
+                self._dhcp.apply(new_config)
+            except Exception as exc:
+                log.error("DHCP server driver failed: %s", exc)
+            try:
+                self._dhcp.apply_client(new_config)
+            except Exception as exc:
+                log.error("DHCP client driver failed: %s", exc)
 
     # ── section handlers ─────────────────────────────────────────────────────
 
