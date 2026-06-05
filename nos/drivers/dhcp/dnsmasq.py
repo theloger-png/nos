@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from nos.utils.interface_alias import get_alias_map, to_physical
 from nos.utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -50,6 +51,9 @@ class DnsmasqDriver:
         interfaces = dhcp_server.get("interface") or {}
         pools = dhcp_server.get("pool") or {}
 
+        # Load alias map to convert NOS names to kernel names.
+        alias_map = get_alias_map()
+
         # Remove all existing nos-*.conf files first.
         for f in self._conf_dir.glob("nos-[!b]*.conf"):
             try:
@@ -69,7 +73,9 @@ class DnsmasqDriver:
                 pool_names = [k for k, v in pool_names.items() if v]
             for pool_name in pool_names:
                 pool_cfg = pools.get(pool_name) or {}
-                content = self._render_pool_conf(iface_name, pool_name, pool_cfg)
+                # Convert NOS interface name to kernel name for dnsmasq config.
+                kernel_iface_name = to_physical(iface_name, alias_map)
+                content = self._render_pool_conf(kernel_iface_name, pool_name, pool_cfg)
                 path = self._conf_dir / f"nos-{iface_name}-{pool_name}.conf"
                 try:
                     path.write_text(content)

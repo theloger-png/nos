@@ -442,3 +442,91 @@ def test_apply_client_underscore_conversion(tmp_driver: DnsmasqDriver) -> None:
     calls = [call[0][0] for call in mock_start.call_args_list]
     assert "bond-0" in calls
     assert "irb.101" in calls
+
+
+# ---------------------------------------------------------------------------
+# Interface alias translation
+# ---------------------------------------------------------------------------
+
+def test_apply_with_alias_translation(tmp_driver: DnsmasqDriver) -> None:
+    """apply() should translate NOS interface names to kernel names in config."""
+    # Create a mock alias map: et1 -> ens34, et0 -> ens33
+    alias_map = {"ens34": "et1", "ens33": "et0"}
+
+    config = _make_config(
+        pools={
+            "pool1": {
+                "range": {"low": "10.0.0.100", "high": "10.0.0.200"},
+                "gateway": "10.0.0.1",
+            }
+        },
+        iface_pools={"et1": {"pool": ["pool1"]}},
+    )
+
+    with patch.object(tmp_driver, "_reload_dnsmasq"):
+        with patch("nos.drivers.dhcp.dnsmasq.get_alias_map", return_value=alias_map):
+            tmp_driver.apply(config)
+
+    # Config filename should have NOS name (et1)
+    conf = tmp_driver._conf_dir / "nos-et1-pool1.conf"
+    assert conf.exists(), "Config file should be created with NOS name"
+
+    # Config content should have kernel name (ens34)
+    text = conf.read_text()
+    assert "dhcp-range=ens34,10.0.0.100,10.0.0.200" in text
+    assert "dhcp-option=ens34,3,10.0.0.1" in text
+
+
+def test_apply_with_alias_translation_subinterface(tmp_driver: DnsmasqDriver) -> None:
+    """apply() should handle NOS subinterface names (e.g., et1.101 -> ens34.101)."""
+    alias_map = {"ens34": "et1", "ens33": "et0"}
+
+    config = _make_config(
+        pools={
+            "vlan_pool": {
+                "range": {"low": "10.1.0.10", "high": "10.1.0.50"},
+                "gateway": "10.1.0.1",
+                "dns_server": "8.8.8.8",
+            }
+        },
+        iface_pools={"et1.101": {"pool": ["vlan_pool"]}},
+    )
+
+    with patch.object(tmp_driver, "_reload_dnsmasq"):
+        with patch("nos.drivers.dhcp.dnsmasq.get_alias_map", return_value=alias_map):
+            tmp_driver.apply(config)
+
+    # Config filename should have NOS name (et1.101)
+    conf = tmp_driver._conf_dir / "nos-et1.101-vlan_pool.conf"
+    assert conf.exists(), "Config file should be created with NOS name"
+
+    # Config content should have kernel name (ens34.101)
+    text = conf.read_text()
+    assert "dhcp-range=ens34.101,10.1.0.10,10.1.0.50" in text
+    assert "dhcp-option=ens34.101,3,10.1.0.1" in text
+    assert "dhcp-option=ens34.101,6,8.8.8.8" in text
+
+
+def test_apply_with_unknown_interface_no_alias(tmp_driver: DnsmasqDriver) -> None:
+    """apply() should use interface name as-is if no alias mapping exists."""
+    alias_map = {"ens34": "et1"}  # Only et1 is mapped
+
+    config = _make_config(
+        pools={
+            "pool1": {
+                "range": {"low": "10.0.0.100", "high": "10.0.0.200"},
+                "gateway": "10.0.0.1",
+            }
+        },
+        iface_pools={"eth0": {"pool": ["pool1"]}},  # eth0 has no alias
+    )
+
+    with patch.object(tmp_driver, "_reload_dnsmasq"):
+        with patch("nos.drivers.dhcp.dnsmasq.get_alias_map", return_value=alias_map):
+            tmp_driver.apply(config)
+
+    # eth0 should be used as-is
+    conf = tmp_driver._conf_dir / "nos-eth0-pool1.conf"
+    assert conf.exists()
+    text = conf.read_text()
+    assert "dhcp-range=eth0,10.0.0.100,10.0.0.200" in text
