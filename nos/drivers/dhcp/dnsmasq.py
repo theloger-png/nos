@@ -105,7 +105,7 @@ class DnsmasqDriver:
         """Send SIGHUP to dnsmasq to reload config (or use systemctl)."""
         try:
             result = subprocess.run(
-                ["systemctl", "reload", "dnsmasq"],
+                ["sudo", "systemctl", "reload", "dnsmasq"],
                 capture_output=True,
                 timeout=10,
             )
