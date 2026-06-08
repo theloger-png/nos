@@ -13,6 +13,7 @@ NOS is a JunOS-like CLI network operating system running on Linux. Always read `
 ## Code Style
 - Python: PEP8, type hints everywhere, pydantic v2 for data models
 - Docstrings on all public methods
+- **Language:** All code, comments, and documentation (`.md` files) must be in English, regardless of conversation language
 
 ## Testing
 - Framework: pytest
