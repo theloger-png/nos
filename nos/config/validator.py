@@ -10,6 +10,7 @@ from nos.config.schema import BgpTypeEnum, NOSConfig
 from nos.config.serializer import _j2k
 
 _LOOPBACK_DUMMY_RE = re.compile(r"^lo\d+")
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,7 @@ class ConfigValidator:
     # ------------------------------------------------------------------
 
     def _check_required_fields(self, config: NOSConfig, result: ValidationResult) -> None:
+        self._check_login_users(config, result)
         for name, vlan in config.vlans.items():
             if vlan.vlan_id is None:
                 result.add_error(
@@ -108,6 +110,22 @@ class ConfigValidator:
     # ------------------------------------------------------------------
     # Cross-reference checks
     # ------------------------------------------------------------------
+
+    def _check_login_users(self, config: NOSConfig, result: ValidationResult) -> None:
+        if not config.system or not config.system.login:
+            return
+        for name, user_cfg in config.system.login.user.items():
+            if not _USERNAME_RE.match(name):
+                result.add_error(
+                    f"system.login.user.{name}",
+                    f"Invalid username {name!r}: must start with alphanumeric, "
+                    "contain only alphanumeric/dash/underscore, max 32 chars",
+                )
+            if user_cfg.user_class is None:
+                result.add_error(
+                    f"system.login.user.{name}.user_class",
+                    "user_class is required (super-user, operator, read-only)",
+                )
 
     def _check_references(self, config: NOSConfig, result: ValidationResult) -> None:
         self._check_vlan_member_references(config, result)

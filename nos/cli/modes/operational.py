@@ -1097,12 +1097,15 @@ class OperationalMode:
 
     def _show_system(self, args: list[str]) -> str:
         cfg = self.store.get_running()
-        sys_cfg = cfg.get("system", {})
+        sys_cfg = cfg.get("system") or {}
+
+        if args and args[0] == "login":
+            from nos.cli.commands.show.system import show_login
+            return show_login(sys_cfg.get("login") or {})
+
         hostname = sys_cfg.get("host_name", sys_cfg.get("host-name", "(not set)"))
         domain = sys_cfg.get("domain_name", sys_cfg.get("domain-name", ""))
-        lines = [
-            f"Hostname:     {hostname}",
-        ]
+        lines = [f"Hostname:     {hostname}"]
         if domain:
             lines.append(f"Domain:       {domain}")
         return "\n".join(lines)

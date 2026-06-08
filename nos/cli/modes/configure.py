@@ -149,6 +149,25 @@ def _is_int(s: str) -> bool:
         return False
 
 
+def _maybe_hash_user_password(tokens: list[str]) -> list[str]:
+    """Hash plaintext when tokens are: system login user <name> authentication password <pw>.
+
+    The hash replaces the plaintext at index 6 so the candidate config never
+    stores a cleartext password.
+    """
+    if (len(tokens) == 7
+            and tokens[0] == "system"
+            and tokens[1] == "login"
+            and tokens[2] == "user"
+            and tokens[4] == "authentication"
+            and tokens[5] == "password"):
+        from nos.drivers.kernel.users import _hash_password
+        result = list(tokens)
+        result[6] = _hash_password(result[6])
+        return result
+    return tokens
+
+
 # ============================================================================
 # Configure mode
 # ============================================================================
@@ -226,6 +245,8 @@ class ConfigureMode:
         full_args, exp_err = expand_config_tokens(full_args_raw)
         if exp_err:
             return f"error: {exp_err}"
+
+        full_args = _maybe_hash_user_password(full_args)
 
         # Detect inline sibling pairs (e.g. "source 10.0.0.2/32 translated 172.18.4.44")
         # BEFORE quoting, so that sibling keywords like "translated" are never

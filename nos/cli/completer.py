@@ -117,7 +117,7 @@ def build_config_tree() -> ConfigNode:
             "user": _d("User accounts", "<username>", _n("User account", {
                 "class": _e("User class", ["super-user", "operator", "read-only"]),
                 "authentication": _n("Authentication methods", {
-                    "plain-text-password": _v("Plain-text password"),
+                    "password": _v("User password (hashed on storage)"),
                     "ssh-rsa": _v("SSH RSA public key", "<key>"),
                 }),
             })),
@@ -1323,7 +1323,20 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # All other show sub-commands (vlans, system, forwarding)
+        # "show system [login]"
+        if resolved_sub == "system":
+            sys_rest = rest[1:]
+            sys_prefix = "" if completing_new else (sys_rest[-1] if sys_rest else "")
+            if not sys_rest or (len(sys_rest) == 1 and not completing_new):
+                if "login".startswith(sys_prefix):
+                    yield Completion(
+                        "login", -len(sys_prefix), display_meta="Show login users"
+                    )
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # All other show sub-commands (vlans, forwarding)
         if completing_new:
             yield Completion("|", display_meta="Filter output")
 

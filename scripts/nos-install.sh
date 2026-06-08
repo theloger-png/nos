@@ -283,6 +283,27 @@ else
     die "Sudoers file validation failed for /etc/sudoers.d/nos-nft"
 fi
 
+# ── 2j. sudoers rule — user account management ───────────────────────────────
+info "Installing sudoers rule for user account management…"
+
+read -r -d '' SUDOERS_USERS <<'SUDOERS_USERS_EOF' || true
+# Allow the nos group to manage system user accounts created by NOS configuration.
+# These are needed by UserDriver in nos/drivers/kernel/users.py.
+%nos ALL=(root) NOPASSWD: /usr/sbin/useradd *
+%nos ALL=(root) NOPASSWD: /usr/sbin/usermod *
+%nos ALL=(root) NOPASSWD: /usr/sbin/userdel *
+%nos ALL=(root) NOPASSWD: /usr/sbin/chpasswd *
+SUDOERS_USERS_EOF
+
+echo "$SUDOERS_USERS" > /etc/sudoers.d/nos-users
+chmod 0440 /etc/sudoers.d/nos-users
+
+if visudo -c -f /etc/sudoers.d/nos-users 2>/dev/null; then
+    ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-users."
+else
+    die "Sudoers file validation failed for /etc/sudoers.d/nos-users"
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos

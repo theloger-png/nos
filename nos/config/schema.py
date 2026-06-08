@@ -93,13 +93,13 @@ def _assert_ip_interface(value: str, label: str) -> None:
 # ---------------------------------------------------------------------------
 
 class UserAuthentication(BaseModel):
-    plain_text_password: Optional[str] = None
+    password: Optional[str] = None  # stored as sha512 crypt hash, never plaintext
     ssh_rsa: Optional[str] = None
 
 
 class UserConfig(BaseModel):
     user_class: Optional[UserClassEnum] = None
-    authentication: Optional[UserAuthentication] = None
+    authentication: UserAuthentication = UserAuthentication()
 
 
 class SyslogFile(BaseModel):

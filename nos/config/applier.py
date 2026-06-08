@@ -93,6 +93,15 @@ class ConfigApplier:
         new: Dict[str, Any],
         full_config: Dict[str, Any],
     ) -> None:
+        old_login = (old or {}).get("login") or {}
+        new_login = (new or {}).get("login") or {}
+        if old_login != new_login:
+            from nos.drivers.kernel.users import UserDriver
+            try:
+                UserDriver().apply(new_login)
+            except Exception as exc:
+                log.error("UserDriver failed: %s", exc)
+
         old_rename = (old or {}).get("interface_rename", False)
         new_rename = (new or {}).get("interface_rename", False)
         if old_rename == new_rename:
