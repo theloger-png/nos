@@ -63,6 +63,7 @@
 - `apply_svi`: IRB/SVI interfaces with IP addresses applied at commit
 - `vlan_add_self` called automatically on SVI apply
 - `nos-apply.service`: applies running config at boot
+- Fixed: lo0.0 address lost after commit — `apply_interface` was calling `_sync_addresses` with no `family_inet`, wiping unit-managed addresses; now skipped when no address keys present at interface level
 
 ### Deployment
 - Systemd services: `nos-pfe.service`, `nos-cli.service`, `nos-apply.service`

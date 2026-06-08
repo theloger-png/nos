@@ -88,7 +88,12 @@ class InterfaceDriver:
                     raise RuntimeError(f"Failed to create interface {name}")
 
             self._apply_attrs(ip, idx, config)
-            self._sync_addresses(ip, idx, name, config)
+            # Only sync addresses when the caller provided address keys.
+            # Interfaces whose addresses live in unit configs (lo0, etc.) never
+            # carry top-level family_inet/inet6, so calling _sync_addresses here
+            # with an empty desired set would erroneously wipe unit-managed addresses.
+            if "family_inet" in config or "family_inet6" in config:
+                self._sync_addresses(ip, idx, name, config)
             self._apply_state(ip, idx, config)
 
     def clear_nos_addresses(self, name: str, old_config: Dict[str, Any]) -> None:
