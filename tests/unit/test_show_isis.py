@@ -73,6 +73,29 @@ ADJ_DATA = {
     ]
 }
 
+# New FRR 8.4.x format with adjacency data at circuit level
+ADJ_DATA_NEW_FORMAT = {
+    "areas": [
+        {
+            "area": "default",
+            "circuits": [
+                {
+                    "circuit": 0,
+                },
+                {
+                    "circuit": 0,
+                    "adj": "nos-dev",
+                    "interface": "ens34.101",
+                    "level": 3,
+                    "state": "Up",
+                    "expires-in": "28s",
+                    "snpa": "2020.2020.2020",
+                },
+            ],
+        }
+    ]
+}
+
 DB_DATA = {
     "areas": [
         {
@@ -210,6 +233,33 @@ class TestRenderAdjacency:
         out = render_adjacency(ADJ_DATA, alias_fn=kernel_to_nos)
         assert "et1" in out
         assert "ens34" not in out
+
+    def test_new_format_with_adj_field(self):
+        """Test FRR 8.4.x format with adjacency data at circuit level."""
+        out = render_adjacency(ADJ_DATA_NEW_FORMAT)
+        assert "ens34.101" in out
+        assert "nos-dev" in out
+        assert "Up" in out
+        assert "2020.2020.2020" in out
+
+    def test_new_format_skips_empty_circuits(self):
+        """Test that empty circuits (no 'adj' field) are skipped."""
+        out = render_adjacency(ADJ_DATA_NEW_FORMAT)
+        # Should find the adjacency
+        assert "nos-dev" in out
+        # Should not show "No IS-IS adjacencies found"
+        assert "No IS-IS adjacencies" not in out
+
+    def test_new_format_with_alias_fn(self):
+        """Test that alias_fn translates interface names in new format."""
+        def kernel_to_nos(name: str) -> str:
+            mapping = {"ens34": "et1", "ens34.101": "et1.101"}
+            return mapping.get(name, name)
+
+        out = render_adjacency(ADJ_DATA_NEW_FORMAT, alias_fn=kernel_to_nos)
+        assert "et1.101" in out
+        assert "ens34" not in out
+        assert "nos-dev" in out
 
 
 # ── render_database ───────────────────────────────────────────────────────────

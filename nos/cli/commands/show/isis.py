@@ -216,21 +216,30 @@ def render_adjacency(
 ) -> str:
     """Render adjacency table from 'show isis neighbor json'.
 
-    FRR 8.x structure:
-      {"areas": [{"area": "default", "circuits": [
+    FRR 8.x structure supports two formats:
+      Old: {"areas": [{"area": "default", "circuits": [
         {"circuit": 0, "adjacencies": [{"sysId": "...", ...}]}
+      ]}]}
+      New: {"areas": [{"area": "default", "circuits": [
+        {"circuit": 0, "adj": "...", "interface": "...", "state": "...", ...}
       ]}]}
 
     FRR returns kernel interface names. When alias_fn is provided, they are
-    displayed as NOS aliases.
+    displayed as NOS aliases. Empty circuit entries (no "adj" field) are skipped.
     """
     adjacencies: list[tuple[str, dict]] = []  # (interface_name, adj_dict)
     for area in _get_areas(data):
         for c in area.get("circuits") or []:
-            ifc_name = c.get("interface") or "?"
-            for adj in c.get("adjacencies") or []:
-                if isinstance(adj, dict):
-                    adjacencies.append((ifc_name, adj))
+            # New format: adjacency data directly in circuit if "adj" is present
+            if "adj" in c:
+                ifc_name = c.get("interface") or "?"
+                adjacencies.append((ifc_name, c))
+            # Old format: adjacency data in nested "adjacencies" array
+            else:
+                ifc_name = c.get("interface") or "?"
+                for adj in c.get("adjacencies") or []:
+                    if isinstance(adj, dict):
+                        adjacencies.append((ifc_name, adj))
 
     if not adjacencies:
         return "IS-IS instance: default\n\nNo IS-IS adjacencies found.\n"
@@ -241,11 +250,14 @@ def render_adjacency(
     lines.append("-" * 65)
 
     for ifc_name, adj in adjacencies:
-        sys_id: str = adj.get("sysId") or adj.get("systemId") or "?"
+        # Try both field name variants for system ID
+        sys_id: str = adj.get("adj") or adj.get("sysId") or adj.get("systemId") or "?"
         if filter_id and filter_id not in sys_id:
             continue
         state: str = adj.get("state") or "?"
-        hold: int = adj.get("holdtimer") or adj.get("holdTimer") or 0
+        # Extract hold time from either format: "holdtimer"/"holdTimer" or "expires-in"
+        hold_val = adj.get("holdtimer") or adj.get("holdTimer") or adj.get("expires-in") or 0
+        hold: str = str(hold_val) if hold_val else "?"
         snpa: str = adj.get("snpa") or "?"
         display_name = alias_fn(ifc_name) if alias_fn else ifc_name
         lines.append(f"{display_name:<12}  {sys_id:<20}  {state:<6}  {hold:<5}  {snpa}")
