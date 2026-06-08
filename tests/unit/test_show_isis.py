@@ -145,34 +145,28 @@ SUMMARY_DATA = {
     ],
 }
 
-ROUTE_DATA = {
-    "routes": [
-        {
-            "prefix": "10.0.0.0/24",
-            "level": 2,
-            "metric": 10,
-            "interface": "ens34",
-            "next_hop": "10.0.0.2",
-            "sequence": 4,
-        },
-        {
-            "prefix": "1.1.1.1/32",
-            "level": 2,
-            "metric": 0,
-            "interface": "lo0",
-            "next_hop": "",
-            "sequence": 3,
-        },
-        {
-            "prefix": "1.1.1.2/32",
-            "level": 2,
-            "metric": 10,
-            "interface": "ens34.101",
-            "next_hop": "10.0.0.2",
-            "sequence": 4,
-        },
-    ]
-}
+ROUTE_TEXT = """\
+Area default:
+IS-IS L2 IPv4 routing table:
+ Prefix       Metric  Interface  Nexthop   Label(s)
+ ----------------------------------------------------
+ 10.0.0.0/24  10      ens34      10.0.0.2  -
+ 1.1.1.1/32   0       -          -         -
+ 1.1.1.2/32   10      ens34.101  10.0.0.2  -
+"""
+
+DB_TEXT = """\
+Area default:
+IS-IS Level-1 link state database:
+LSP ID                  PduLen  SeqNumber   Chksum  Holdtime  ATT/P/OL
+nos-dev.00-00         *    75  0x00000004  0x68e8      1092   0/0/0
+rtr02.00-00               75  0x00000003  0x4de8      1093   0/0/0
+
+IS-IS Level-2 link state database:
+LSP ID                  PduLen  SeqNumber   Chksum  Holdtime  ATT/P/OL
+nos-dev.00-00         *    75  0x00000004  0x68e8      1090   0/0/0
+rtr02.00-00               75  0x00000003  0x4de8      1091   0/0/0
+"""
 
 
 def _frr(responses: dict) -> MagicMock:
@@ -181,7 +175,8 @@ def _frr(responses: dict) -> MagicMock:
     def show_side_effect(cmd: str) -> str:
         for key, val in responses.items():
             if key in cmd:
-                return json.dumps(val)
+                # String values are returned as-is (text output); dicts/lists are JSON-encoded.
+                return val if isinstance(val, str) else json.dumps(val)
         raise Exception(f"Unexpected FRR command: {cmd!r}")
 
     frr.show.side_effect = show_side_effect
@@ -345,57 +340,57 @@ class TestRenderSummary:
 
 class TestRenderRoute:
     def test_renders_route_entries(self):
-        out = render_route(ROUTE_DATA)
+        out = render_route(ROUTE_TEXT)
         assert "10.0.0.0/24" in out
         assert "1.1.1.1/32" in out
         assert "1.1.1.2/32" in out
 
     def test_renders_columns(self):
-        out = render_route(ROUTE_DATA)
+        out = render_route(ROUTE_TEXT)
         assert "Prefix" in out
         assert "Metric" in out
         assert "Interface" in out
         assert "NH via" in out
 
     def test_renders_metric_and_interface(self):
-        out = render_route(ROUTE_DATA)
+        out = render_route(ROUTE_TEXT)
         assert "10.0.0.2" in out
         assert "ens34" in out
-        assert "lo0" in out
 
-    def test_level_and_sequence(self):
-        out = render_route(ROUTE_DATA)
-        # Check that level 2 and sequence numbers are present
+    def test_level_and_version(self):
+        out = render_route(ROUTE_TEXT, l1_ver=0, l2_ver=4)
         lines = out.split("\n")
-        # Find a route line (not header)
         for line in lines:
             if "10.0.0.0/24" in line:
-                assert "2" in line  # level
-                assert "4" in line  # sequence
+                assert "2" in line   # level
+                assert "4" in line   # version (l2_ver)
 
     def test_empty_routes(self):
-        out = render_route({})
+        out = render_route("")
         assert "No IS-IS routes" in out
         assert "Current version: L1:0 L2:0" in out
 
     def test_alias_fn_translates_interface_names(self):
         def kernel_to_nos(name: str) -> str:
-            mapping = {"ens34": "et1", "ens34.101": "et1.101", "lo0": "lo0"}
+            mapping = {"ens34": "et1", "ens34.101": "et1.101"}
             return mapping.get(name, name)
 
-        out = render_route(ROUTE_DATA, alias_fn=kernel_to_nos)
+        out = render_route(ROUTE_TEXT, alias_fn=kernel_to_nos)
         assert "et1" in out
         assert "et1.101" in out
         assert "ens34" not in out
 
-    def test_next_hop_via_empty_for_local(self):
-        """Test that local routes have empty next hop."""
-        out = render_route(ROUTE_DATA)
+    def test_local_route_shows_loopback(self):
+        """Local routes (no interface, no nexthop) display lo0.0."""
+        out = render_route(ROUTE_TEXT)
         lines = out.split("\n")
         for line in lines:
             if "1.1.1.1/32" in line:
-                # Should have empty next_hop for lo0 interface
-                assert line.rstrip().endswith("1.1.1.1/32") or "lo0" in line
+                assert "lo0.0" in line
+
+    def test_version_header_uses_level_versions(self):
+        out = render_route(ROUTE_TEXT, l1_ver=3, l2_ver=5)
+        assert "Current version: L1:3 L2:5" in out
 
 
 # ── show_isis (entry point) ───────────────────────────────────────────────────
@@ -443,11 +438,21 @@ class TestShowISIS:
         assert "Sequence" in out
 
     def test_route_subcommand(self):
-        frr = _frr({"route": ROUTE_DATA, "database": DB_DATA})
+        frr = _frr({
+            "summary": SUMMARY_DATA,
+            "show isis database": DB_TEXT,
+            "show isis route": ROUTE_TEXT,
+        })
         out = show_isis(["route"], frr=frr)
         assert "10.0.0.0/24" in out
         assert "1.1.1.1/32" in out
         assert "1.1.1.2/32" in out
+
+    def test_route_subcommand_not_running_when_no_summary(self):
+        frr = _frr({})
+        frr.show.side_effect = Exception("isisd not running")
+        out = show_isis(["route"], frr=frr)
+        assert "not running" in out.lower()
 
     def test_summary_subcommand(self):
         frr = _frr({"summary": SUMMARY_DATA})
