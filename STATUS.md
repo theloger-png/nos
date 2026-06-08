@@ -123,3 +123,7 @@
 
 ## Test Count
 - Total: 1627 passing, 0 failing - 2026-06-08
+
+## Recent Changes (2026-06-08)
+- Fixed: pipe character now works without spaces (`show config irb| display set`)
+- Added: 3 new parser tests for pipe flexibility
