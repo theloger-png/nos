@@ -98,10 +98,10 @@ class CommandParser:
         if not line:
             return ParseResult(command=CommandType.UNKNOWN, raw=raw)
 
-        # Split pipe filter before tokenising
+        # Split pipe filter before tokenising (handle | with or without spaces)
         pipe_text: Optional[str] = None
-        if " | " in line:
-            main, _, rest = line.partition(" | ")
+        if "|" in line:
+            main, _, rest = line.partition("|")
             line = main.rstrip()
             pipe_text = rest.strip()
 

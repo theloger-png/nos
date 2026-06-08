@@ -46,6 +46,22 @@ class TestOperationalMode:
         assert r.command == CommandType.SHOW
         assert r.pipe == "no-more"
 
+    def test_show_with_pipe_no_space_before(self, parser):
+        r = parser.parse("show interfaces| match ge-", CLIMode.OPERATIONAL)
+        assert r.command == CommandType.SHOW
+        assert r.args == ["interfaces"]
+        assert r.pipe == "match ge-"
+
+    def test_show_with_pipe_no_space_after(self, parser):
+        r = parser.parse("show route |except 0.0.0.0", CLIMode.OPERATIONAL)
+        assert r.command == CommandType.SHOW
+        assert r.pipe == "except 0.0.0.0"
+
+    def test_show_with_pipe_no_spaces(self, parser):
+        r = parser.parse("show bgp summary|count", CLIMode.OPERATIONAL)
+        assert r.command == CommandType.SHOW
+        assert r.pipe == "count"
+
     def test_ping(self, parser):
         r = parser.parse("ping 10.0.0.1", CLIMode.OPERATIONAL)
         assert r.command == CommandType.PING
@@ -212,6 +228,17 @@ class TestConfigureModeShow:
         r = parser.parse("show interfaces", CLIMode.CONFIGURE)
         assert r.command == CommandType.SHOW
         assert r.args == ["interfaces"]
+
+    def test_show_with_pipe_no_space_before_configure(self, parser):
+        r = parser.parse("show configuration interfaces irb| display set", CLIMode.CONFIGURE)
+        assert r.command == CommandType.SHOW
+        assert r.args == ["configuration", "interfaces", "irb"]
+        assert r.pipe == "display set"
+
+    def test_show_with_pipe_no_spaces_configure(self, parser):
+        r = parser.parse("show|compare", CLIMode.CONFIGURE)
+        assert r.command == CommandType.SHOW
+        assert r.pipe == "compare"
 
 
 # ============================================================================
