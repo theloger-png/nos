@@ -18,7 +18,7 @@ _log = logging.getLogger(__name__)
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
-from prompt_toolkit.formatted_text import ANSI, FormattedText, HTML
+from prompt_toolkit.formatted_text import ANSI, FormattedText, HTML, to_plain_text
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.styles import Style
@@ -148,7 +148,7 @@ class NOSShell:
                 output.write("Possible completions:\n")
                 for c in completions:
                     kw = str(c.text)
-                    meta = str(c.display_meta) if c.display_meta else ""
+                    meta = to_plain_text(c.display_meta) if c.display_meta else ""
                     output.write(f"  {kw:<30}  {meta}\n")
             else:
                 output.write("  <no completions available>\n")

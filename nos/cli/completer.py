@@ -1341,7 +1341,7 @@ class NOSCompleter(Completer):
                     yield Completion(
                         "services", -len(sys_prefix), display_meta="Show system services"
                     )
-            elif len(sys_rest) >= 2 and sys_rest[0] == "services":
+            elif sys_rest and sys_rest[0].lower() == "services":
                 # "show system services [ssh]"
                 svc_prefix = "" if completing_new else (sys_rest[-1] if sys_rest else "")
                 if not sys_rest[1:] or (len(sys_rest) == 2 and not completing_new):
