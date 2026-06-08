@@ -14,7 +14,11 @@ from nos.cli.completer import expand_config_tokens
 from nos.cli.parser import CLIMode, CommandParser, CommandType, ParseResult
 from nos.config.commit import CommitEngine, CommitError, RollbackError
 from nos.config.diff import diff
-from nos.config.serializer import from_set_commands, _merge_compound_tokens
+from nos.config.serializer import (
+    _INLINE_SIBLING_PAIRS,
+    _merge_compound_tokens,
+    from_set_commands,
+)
 from nos.config.store import ConfigStore
 
 _parser = CommandParser()
@@ -222,6 +226,32 @@ class ConfigureMode:
         full_args, exp_err = expand_config_tokens(full_args_raw)
         if exp_err:
             return f"error: {exp_err}"
+
+        # Detect inline sibling pairs (e.g. "source 10.0.0.2/32 translated 172.18.4.44")
+        # BEFORE quoting, so that sibling keywords like "translated" are never
+        # wrapped in double-quotes.  If detected, emit one set command per pair.
+        sibling_idx: Optional[int] = None
+        for k in range(len(full_args) - 2):
+            if (full_args[k], full_args[k + 2]) in _INLINE_SIBLING_PAIRS:
+                sibling_idx = k
+                break
+
+        if sibling_idx is not None:
+            prefix_toks = full_args[:sibling_idx]
+            sibling_toks = full_args[sibling_idx:]
+            cmds: list[str] = []
+            j = 0
+            while j + 1 < len(sibling_toks):
+                key = sibling_toks[j]
+                val = sibling_toks[j + 1]
+                val_tok = val if _is_int(val) else _quote_value(val)
+                cmds.append("set " + " ".join(prefix_toks + [key, val_tok]))
+                j += 2
+            partial = from_set_commands(cmds)
+            if not partial:
+                return "error: invalid set arguments"
+            _deep_merge(self.store.candidate, partial)
+            return ""
 
         # Use the config tree to find where the value begins.
         # Tokens *before* split_at are path components (left as-is so that

@@ -351,3 +351,57 @@ class TestTopUpNavigation:
         mode.execute("up")
         out = mode.execute("show")
         assert "eth0" in out
+
+
+# ============================================================================
+# Inline sibling pairs (NAT static source/translated)
+# ============================================================================
+
+class TestSetInlineSiblingPairs:
+    def test_source_and_translated_on_same_line(self, mode, store):
+        """set ... source <ip> translated <ip> must produce two sibling keys."""
+        result = mode.execute(
+            "set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44"
+        )
+        assert result == ""
+        rule = store.candidate["security"]["nat"]["static"]["rule"]["R1"]
+        assert rule["source"] == "10.0.0.2/32"
+        assert rule["translated"] == "172.18.4.44"
+
+    def test_source_alone_sets_only_source(self, mode, store):
+        """set ... source <ip> (no translated) must set only source."""
+        result = mode.execute(
+            "set security nat static rule R1 source 10.0.0.2/32"
+        )
+        assert result == ""
+        rule = store.candidate["security"]["nat"]["static"]["rule"]["R1"]
+        assert rule["source"] == "10.0.0.2/32"
+        assert "translated" not in rule
+
+    def test_translated_alone_sets_only_translated(self, mode, store):
+        """set ... translated <ip> (no source) must set only translated."""
+        result = mode.execute(
+            "set security nat static rule R1 translated 172.18.4.44"
+        )
+        assert result == ""
+        rule = store.candidate["security"]["nat"]["static"]["rule"]["R1"]
+        assert rule["translated"] == "172.18.4.44"
+        assert "source" not in rule
+
+    def test_source_and_translated_do_not_nest(self, mode, store):
+        """source value must not become a dict key containing translated."""
+        mode.execute(
+            "set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44"
+        )
+        rule = store.candidate["security"]["nat"]["static"]["rule"]["R1"]
+        # source must be a scalar, not a dict
+        assert isinstance(rule["source"], str)
+
+    def test_inline_sibling_under_edit_path(self, mode, store):
+        """Inline sibling pair resolution also works when edit_path is set."""
+        mode.execute("edit security nat static rule R1")
+        result = mode.execute("set source 10.0.0.2/32 translated 172.18.4.44")
+        assert result == ""
+        rule = store.candidate["security"]["nat"]["static"]["rule"]["R1"]
+        assert rule["source"] == "10.0.0.2/32"
+        assert rule["translated"] == "172.18.4.44"
