@@ -135,7 +135,7 @@ def test_apply_full_flow_tracks_managed_users(mock_run, mock_sub_run, mock_exist
 
     login_config = {
         "user": {
-            "alice": {"user_class": "super-user", "authentication": {"password": "$6$abc"}}
+            "alice": {"class": "super-user", "authentication": {"password": "$6$abc"}}
         }
     }
 
@@ -205,7 +205,7 @@ def test_show_login_empty():
 def test_show_login_single_user():
     login = {
         "user": {
-            "admin": {"user_class": "super-user", "authentication": {}}
+            "admin": {"class": "super-user", "authentication": {}}
         }
     }
     output = show_login(login)
@@ -217,8 +217,8 @@ def test_show_login_single_user():
 def test_show_login_multiple_users_sorted():
     login = {
         "user": {
-            "zoe": {"user_class": "operator", "authentication": {}},
-            "alice": {"user_class": "read-only", "authentication": {}},
+            "zoe": {"class": "operator", "authentication": {}},
+            "alice": {"class": "read-only", "authentication": {}},
         }
     }
     output = show_login(login)
@@ -230,7 +230,7 @@ def test_show_login_multiple_users_sorted():
 def test_show_login_user_class_hyphenated():
     login = {
         "user": {
-            "op1": {"user_class": "read_only", "authentication": {}}
+            "op1": {"class": "read_only", "authentication": {}}
         }
     }
     output = show_login(login)
