@@ -105,14 +105,24 @@ class FRRRenderer:
 
         # Interface stanzas: one merged block per interface, covering both
         # IP address assignment and IS-IS interface configuration.
-        # IS-IS uses unit notation (lo0.0, et1.0); strip the suffix to obtain
-        # the kernel interface name used in frr.conf.
+        # IS-IS uses unit notation (lo0.0, et1.0, et1.101, etc). For rendering:
+        # - .0 suffix is stripped (default unit): lo0.0 → lo0, et1.0 → et1
+        # - other suffixes are preserved: et1.101 → et1.101 (VLAN/subinterface)
         isis_ifaces_raw: Dict[str, Any] = (isis_cfg or {}).get("interface") or {}
-        # Map kernel interface name → isis iface config (strip .N unit suffix)
-        isis_ifaces: Dict[str, Any] = {
-            (k.rsplit(".", 1)[0] if "." in k else k): v
-            for k, v in isis_ifaces_raw.items()
-        }
+
+        # Map interface name → isis iface config.
+        # Strip .0 suffix for default unit, preserve other suffixes for subinterfaces.
+        isis_ifaces: Dict[str, Any] = {}
+
+        for k, v in isis_ifaces_raw.items():
+            # Only strip .0 suffix (default unit), preserve other units like .101, .100, etc.
+            if k.endswith(".0"):
+                base_key = k[:-2]  # Remove .0 suffix
+            else:
+                base_key = k  # Keep the full name (with unit)
+
+            isis_ifaces[base_key] = v
+
         all_iface_names: set[str] = set(isis_ifaces.keys())
         for name, iface in interfaces_cfg.items():
             if _has_ip_addresses(iface):

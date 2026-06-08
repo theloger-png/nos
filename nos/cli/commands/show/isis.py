@@ -124,6 +124,10 @@ def render_interface(
       {"areas": [{"area": "default", "circuits": [
         {"circuit": 0, "interface": {"name": "ens34", "state": "Up", ...}}
       ]}]}
+
+    FRR returns kernel interface names (ens34, ens34.101, lo0, etc).
+    When alias_fn is provided, kernel names are displayed as NOS aliases (et1, et1.101).
+    Filter matching uses display names (NOS aliases if alias_fn, kernel names otherwise).
     """
     circuits: list[dict] = []
     for area in _get_areas(data):
@@ -140,9 +144,9 @@ def render_interface(
     if extensive:
         for ifc in circuits:
             name: str = ifc.get("name", "?")
-            if filter_iface and filter_iface != name:
-                continue
             display_name = alias_fn(name) if alias_fn else name
+            if filter_iface and filter_iface != display_name:
+                continue
             lines.extend(_render_interface_extensive(ifc, display_name))
         return "\n".join(lines) + "\n"
 
@@ -151,9 +155,9 @@ def render_interface(
 
     for ifc in circuits:
         name: str = ifc.get("name", "?")
-        if filter_iface and filter_iface != name:
-            continue
         display_name = alias_fn(name) if alias_fn else name
+        if filter_iface and filter_iface != display_name:
+            continue
         level_code = _get_level_code(ifc, name)
         cid: str = ifc.get("circuit-id", "0x1")
         if cid == "0x0":
@@ -205,13 +209,20 @@ def _render_interface_extensive(ifc: dict, display_name: str) -> list[str]:
 
 # ── 'show isis adjacency' ──────────────────────────────────────────────────────
 
-def render_adjacency(data: dict, filter_id: str | None = None) -> str:
+def render_adjacency(
+    data: dict,
+    filter_id: str | None = None,
+    alias_fn: Optional[Callable[[str], str]] = None,
+) -> str:
     """Render adjacency table from 'show isis neighbor json'.
 
     FRR 8.x structure:
       {"areas": [{"area": "default", "circuits": [
         {"circuit": 0, "adjacencies": [{"sysId": "...", ...}]}
       ]}]}
+
+    FRR returns kernel interface names. When alias_fn is provided, they are
+    displayed as NOS aliases.
     """
     adjacencies: list[tuple[str, dict]] = []  # (interface_name, adj_dict)
     for area in _get_areas(data):
@@ -236,7 +247,8 @@ def render_adjacency(data: dict, filter_id: str | None = None) -> str:
         state: str = adj.get("state") or "?"
         hold: int = adj.get("holdtimer") or adj.get("holdTimer") or 0
         snpa: str = adj.get("snpa") or "?"
-        lines.append(f"{ifc_name:<12}  {sys_id:<20}  {state:<6}  {hold:<5}  {snpa}")
+        display_name = alias_fn(ifc_name) if alias_fn else ifc_name
+        lines.append(f"{display_name:<12}  {sys_id:<20}  {state:<6}  {hold:<5}  {snpa}")
 
     return "\n".join(lines) + "\n"
 
@@ -369,7 +381,7 @@ def show_isis(
         if not data:
             return _NOT_RUNNING
         filter_id = rest[0] if rest else None
-        return render_adjacency(data, filter_id=filter_id)
+        return render_adjacency(data, filter_id=filter_id, alias_fn=alias_fn)
 
     if sub == "database":
         detail = bool(rest and resolve_prefix(rest[0].lower(), ["detail"])[0] == "detail")
