@@ -341,6 +341,54 @@ def build_config_tree() -> ConfigNode:
 
     routing_instances_node = _d("Routing instances (VRF/VR)", "<instance-name>", ri_inner)
 
+    # ── security / nat ────────────────────────────────────────────────
+    _nat_static_rule_inner = _n("Static NAT rule", {
+        "source":     _v("Source prefix", "<ip-prefix>"),
+        "translated": _v("Translated IP address", "<ip-address>"),
+    })
+
+    _nat_pool_inner = _n("NAT pool configuration", {
+        "address": _v("Pool address prefix", "<ip-prefix>"),
+    })
+
+    _nat_source_rule_inner = _n("Source NAT rule", {
+        "match": _n("Match conditions", {
+            "source": _v("Source prefix to match", "<ip-prefix>"),
+        }),
+        "then": _n("Then actions", {
+            "pool": _v("NAT pool name", "<pool-name>"),
+        }),
+        "interface": _v("Outgoing interface name", "<interface-name>"),
+    })
+
+    _nat_dest_rule_inner = _n("Destination NAT rule", {
+        "match": _n("Match conditions", {
+            "destination":      _v("Destination IP to match", "<ip-address>"),
+            "destination-port": _v("Destination port to match", "<1-65535>"),
+        }),
+        "then": _n("Then actions", {
+            "destination":      _v("Translated destination IP", "<ip-address>"),
+            "destination-port": _v("Translated destination port", "<1-65535>"),
+        }),
+    })
+
+    _nat_node = _n("NAT configuration", {
+        "static": _n("Static NAT", {
+            "rule": _d("Static NAT rule", "<rule-name>", _nat_static_rule_inner),
+        }),
+        "pool": _d("NAT address pool", "<pool-name>", _nat_pool_inner),
+        "source": _n("Source NAT", {
+            "rule": _d("Source NAT rule", "<rule-name>", _nat_source_rule_inner),
+        }),
+        "destination": _n("Destination NAT", {
+            "rule": _d("Destination NAT rule", "<rule-name>", _nat_dest_rule_inner),
+        }),
+    })
+
+    security_node = _n("Security configuration", {
+        "nat": _nat_node,
+    })
+
     return _n("Configuration root", {
         "system": system_node,
         "interfaces": interfaces_node,
@@ -349,6 +397,7 @@ def build_config_tree() -> ConfigNode:
         "protocols": protocols_node,
         "policy-options": policy_options_node,
         "routing-instances": routing_instances_node,
+        "security": security_node,
     })
 
 
@@ -671,10 +720,19 @@ _SHOW_OPER_ARGS = {
     "route": "Show routing table",
     "bgp": "Show BGP information",
     "isis": "Show IS-IS information",
+    "security": "Show security (NAT) information",
     "vlans": "Show VLAN table",
     "system": "Show system information",
     "forwarding": "Show PFE forwarding mode",
     "configuration": "Show running configuration (tree format)",
+}
+
+_NAT_SHOW_SUBCMDS: dict[str, str] = {
+    "destination":  "Show destination NAT rules",
+    "pool":         "Show NAT pools",
+    "source":       "Show source NAT rules",
+    "static":       "Show static NAT rules",
+    "translations": "Show active NAT translations",
 }
 
 _ROUTE_SUBCMDS: dict[str, str] = {
@@ -1213,6 +1271,24 @@ class NOSCompleter(Completer):
                 neighbor_rest = bgp_rest[1:]
                 if completing_new and not neighbor_rest:
                     yield Completion("<ip-address>", display_meta="BGP neighbor IP address")
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # "show security nat [static|source|pool|destination|translations]"
+        if resolved_sub == "security":
+            sec_rest = rest[1:]
+            sec_prefix = "" if completing_new else (sec_rest[-1] if sec_rest else "")
+            if not sec_rest or (len(sec_rest) == 1 and not completing_new):
+                if "nat".startswith(sec_prefix):
+                    yield Completion("nat", -len(sec_prefix), display_meta="Show NAT information")
+            elif sec_rest[0].lower() == "nat":
+                nat_rest = sec_rest[1:]
+                nat_prefix = "" if completing_new else (nat_rest[-1] if nat_rest else "")
+                if not nat_rest or (len(nat_rest) == 1 and not completing_new):
+                    for kw, meta in _NAT_SHOW_SUBCMDS.items():
+                        if kw.startswith(nat_prefix):
+                            yield Completion(kw, -len(nat_prefix), display_meta=meta)
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return

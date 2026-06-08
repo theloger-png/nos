@@ -123,8 +123,10 @@ _parser = CommandParser()
 
 _SHOW_SUBCMDS: list[str] = [
     "arp", "bgp", "configuration", "dhcp", "ethernet-switching", "forwarding", "interfaces",
-    "ipv6", "isis", "route", "system", "vlans",
+    "ipv6", "isis", "route", "security", "system", "vlans",
 ]
+
+_NAT_SUBCMDS: list[str] = ["destination", "pool", "source", "static", "translations"]
 
 _ES_SUBCMDS: list[str] = ["flood", "interface", "statistics", "table"]
 
@@ -324,6 +326,8 @@ class OperationalMode:
                 output = self._show_system(sub_args)
             case "forwarding":
                 output = self._show_forwarding()
+            case "security":
+                output = self._show_security(sub_args)
             case "ethernet-switching":
                 output = self._show_ethernet_switching(sub_args)
             case "configuration":
@@ -345,6 +349,7 @@ class OperationalMode:
             "  route               Show routing table\n"
             "  bgp                 Show BGP information\n"
             "  isis                Show IS-IS information\n"
+            "  security            Show security (NAT) information\n"
             "  vlans               Show VLAN table\n"
             "  system              Show system information\n"
             "  forwarding          Show PFE forwarding mode\n"
@@ -1553,6 +1558,56 @@ class OperationalMode:
             members = iface_map.get(vname, [])
             lines.append(f"{display:<21}{', '.join(members) if members else '-'}")
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # show security nat
+    # ------------------------------------------------------------------
+
+    def _show_security(self, args: list[str]) -> str:
+        from nos.cli.commands.show.nat import (
+            show_nat_destination,
+            show_nat_pool,
+            show_nat_source,
+            show_nat_static,
+            show_nat_translations,
+        )
+
+        if not args or args[0].lower() != "nat":
+            return (
+                "Possible completions:\n"
+                "  nat  Show NAT information\n"
+            )
+
+        nat_args = args[1:]
+        if not nat_args:
+            return (
+                "Possible completions:\n"
+                "  destination   Show destination NAT rules\n"
+                "  pool          Show NAT pools\n"
+                "  source        Show source NAT rules\n"
+                "  static        Show static NAT rules\n"
+                "  translations  Show active NAT translations (nftables)\n"
+            )
+
+        sub_raw = nat_args[0].lower()
+        sub, err = resolve_prefix(sub_raw, _NAT_SUBCMDS)
+        if err:
+            return f"error: {err}"
+
+        cfg = self.store.get_running()
+        match sub:
+            case "static":
+                return show_nat_static(cfg)
+            case "source":
+                return show_nat_source(cfg)
+            case "pool":
+                return show_nat_pool(cfg)
+            case "destination":
+                return show_nat_destination(cfg)
+            case "translations":
+                return show_nat_translations()
+            case _:  # pragma: no cover
+                return f"error: unknown nat sub-command: {sub!r}"
 
     def _show_configuration(self, args: list[str]) -> str:
         """Show running config in tree format, optionally filtered to a section."""

@@ -567,6 +567,90 @@ class RoutingInstanceConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# NAT models
+# ---------------------------------------------------------------------------
+
+class NatStaticRule(BaseModel):
+    source: Optional[str] = None
+    translated: Optional[str] = None
+
+    @field_validator("source")
+    @classmethod
+    def validate_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_prefix(v, "nat static rule source")
+        return v
+
+    @field_validator("translated")
+    @classmethod
+    def validate_translated(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "nat static rule translated")
+        return v
+
+
+class NatPool(BaseModel):
+    address: Optional[str] = None
+
+    @field_validator("address")
+    @classmethod
+    def validate_address(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_prefix(v, "nat pool address")
+        return v
+
+
+class NatSourceRule(BaseModel):
+    match_source: Optional[str] = None
+    then_pool: Optional[str] = None
+    interface: Optional[str] = None
+
+    @field_validator("match_source")
+    @classmethod
+    def validate_match_source(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_prefix(v, "nat source rule match source")
+        return v
+
+
+class NatDestinationRule(BaseModel):
+    match_destination: Optional[str] = None
+    match_destination_port: Optional[int] = Field(None, ge=1, le=65535)
+    then_destination: Optional[str] = None
+    then_destination_port: Optional[int] = Field(None, ge=1, le=65535)
+
+    @field_validator("match_destination", "then_destination")
+    @classmethod
+    def validate_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            _assert_ip_address(v, "nat destination rule IP")
+        return v
+
+
+class NatStaticConfig(BaseModel):
+    rule: Dict[str, NatStaticRule] = {}
+
+
+class NatSourceConfig(BaseModel):
+    rule: Dict[str, NatSourceRule] = {}
+
+
+class NatDestinationConfig(BaseModel):
+    rule: Dict[str, NatDestinationRule] = {}
+
+
+class NatConfig(BaseModel):
+    static: NatStaticConfig = NatStaticConfig()
+    pool: Dict[str, NatPool] = {}
+    source: NatSourceConfig = NatSourceConfig()
+    destination: NatDestinationConfig = NatDestinationConfig()
+
+
+class SecurityConfig(BaseModel):
+    nat: NatConfig = NatConfig()
+
+
+# ---------------------------------------------------------------------------
 # Top-level configuration
 # ---------------------------------------------------------------------------
 
@@ -578,3 +662,4 @@ class NOSConfig(BaseModel):
     protocols: Optional[ProtocolsConfig] = None
     policy_options: Optional[PolicyOptionsConfig] = None
     routing_instances: Dict[str, RoutingInstanceConfig] = {}
+    security: SecurityConfig = SecurityConfig()

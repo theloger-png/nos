@@ -83,6 +83,8 @@ class ConfigApplier:
             except Exception as exc:
                 log.error("DHCP client driver failed: %s", exc)
 
+        self._apply_nat(old_config, new_config)
+
     # ── section handlers ─────────────────────────────────────────────────────
 
     def _apply_system(
@@ -344,6 +346,33 @@ class ConfigApplier:
                         self._pfe.fib.route_add(prefix, cfg.get("next_hop"), ifindex=0)
                     except Exception as exc:
                         log.error("PFE route_add failed for %s: %s", prefix, exc)
+
+    def _apply_nat(
+        self,
+        old_config: Dict[str, Any],
+        new_config: Dict[str, Any],
+    ) -> None:
+        old_nat = (old_config.get("security") or {}).get("nat") or {}
+        new_nat = (new_config.get("security") or {}).get("nat") or {}
+        if old_nat == new_nat:
+            return
+
+        from nos.config.schema import NatConfig, SecurityConfig
+        from nos.drivers.kernel.nat import NatDriver
+
+        log.info("Applying NAT config change")
+        try:
+            security = SecurityConfig.model_validate(
+                new_config.get("security") or {}
+            )
+            alias_map = self._get_alias_map(new_config)
+
+            def alias_to_kernel(name: str) -> str:
+                return self._phys(name, alias_map)
+
+            NatDriver().apply(security.nat, alias_to_kernel)
+        except Exception as exc:
+            log.error("NAT driver failed: %s", exc)
 
     def _apply_protocols(
         self,

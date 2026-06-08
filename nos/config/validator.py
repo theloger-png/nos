@@ -117,6 +117,7 @@ class ConfigValidator:
         self._check_routing_instance_interface_references(config, result)
         self._check_policy_prefix_list_references(config, result)
         self._check_loopback_interface_constraints(config, result)
+        self._check_nat_references(config, result)
 
     def _check_vlan_member_references(self, config: NOSConfig, result: ValidationResult) -> None:
         """Switchport vlan member names must resolve to a defined VLAN (or be 'all' / numeric)."""
@@ -234,6 +235,30 @@ class ConfigValidator:
                             f"policy_options.policy_statement.{ps_name}.term.{term_name}.from_config.prefix_list",
                             f"prefix_list {pl!r} is not defined in policy_options.prefix_list",
                         )
+
+    def _check_nat_references(self, config: NOSConfig, result: ValidationResult) -> None:
+        """NAT cross-reference: pool names and interface names must be defined."""
+        nat = config.security.nat
+        defined_pools = set(nat.pool.keys())
+        iface_names = set(config.interfaces.keys())
+
+        for rule_name, rule in nat.source.rule.items():
+            if rule.then_pool is not None and rule.then_pool not in defined_pools:
+                result.add_error(
+                    f"security.nat.source.rule.{rule_name}.then_pool",
+                    f"Pool {rule.then_pool!r} is not defined in security.nat.pool",
+                )
+            if rule.interface is not None:
+                base = (
+                    rule.interface.rsplit(".", 1)[0]
+                    if "." in rule.interface
+                    else rule.interface
+                )
+                if base not in iface_names:
+                    result.add_error(
+                        f"security.nat.source.rule.{rule_name}.interface",
+                        f"Interface {rule.interface!r} is not defined in interfaces",
+                    )
 
     def _check_loopback_interface_constraints(
         self, config: NOSConfig, result: ValidationResult

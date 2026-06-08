@@ -24,6 +24,13 @@ _COMPOUND_TOKENS: dict[tuple[str, str], str] = {
     ("family", "inet6"):              "family-inet6",
     ("family", "iso"):                "family-iso",
     ("family", "ethernet-switching"): "family-ethernet-switching",
+    # NAT match/then compound keywords
+    ("match", "source"):              "match-source",
+    ("match", "destination"):         "match-destination",
+    ("match", "destination-port"):    "match-destination-port",
+    ("then", "pool"):                 "then-pool",
+    ("then", "destination"):          "then-destination",
+    ("then", "destination-port"):     "then-destination-port",
 }
 
 # Internal snake_case key → the CLI token list used when emitting set commands.
@@ -32,6 +39,13 @@ _COMPOUND_KEY_EXPANSION: dict[str, list[str]] = {
     "family_inet6":             ["family", "inet6"],
     "family_iso":               ["family", "iso"],
     "family_ethernet_switching": ["family", "ethernet-switching"],
+    # NAT match/then compound keywords
+    "match_source":             ["match", "source"],
+    "match_destination":        ["match", "destination"],
+    "match_destination_port":   ["match", "destination-port"],
+    "then_pool":                ["then", "pool"],
+    "then_destination":         ["then", "destination"],
+    "then_destination_port":    ["then", "destination-port"],
 }
 
 
