@@ -295,11 +295,28 @@ read -r -d '' SUDOERS_USERS <<'SUDOERS_USERS_EOF' || true
 %nos ALL=(root) NOPASSWD: /usr/sbin/chpasswd *
 SUDOERS_USERS_EOF
 
+# Add human user if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_USERS+="
+# Allow the human user to manage user accounts during development.
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/useradd *
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/usermod *
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/userdel *
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/chpasswd *"
+fi
+
 echo "$SUDOERS_USERS" > /etc/sudoers.d/nos-users
 chmod 0440 /etc/sudoers.d/nos-users
 
 if visudo -c -f /etc/sudoers.d/nos-users 2>/dev/null; then
     ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-users."
+    if [[ -n "$HUMAN_USER" ]]; then
+        ok "  Added user management sudoers rules for user '$HUMAN_USER'."
+    fi
 else
     die "Sudoers file validation failed for /etc/sudoers.d/nos-users"
 fi
