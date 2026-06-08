@@ -1,6 +1,12 @@
 """JunOS-style 'show isis' implementation.
 
-Data sources: vtysh JSON output from FRR isisd.
+Data sources: vtysh JSON output from FRR isisd (FRR 8.x format).
+
+FRR 8.x JSON structure:
+  show isis interface json → {"areas": [{"area": "default", "circuits": [...]}]}
+  show isis neighbor json  → {"areas": [{"area": "default", "circuits": [...]}]}
+  show isis database json  → {"areas": [{"area": {"name": "default"}, "levels": [...]}]}
+  show isis summary json   → {"vrf": "...", "system-id": "...", "areas": [...]}
 
 Command variants:
   show isis
@@ -29,7 +35,6 @@ _ISIS_SUBCMDS = ["adjacency", "database", "interface", "summary"]
 # ── Fetch helpers ──────────────────────────────────────────────────────────────
 
 def _frr_fetch(frr: "FRRClient", cmd: str) -> dict | list:
-    """Run a vtysh JSON command; return parsed dict/list or {} on error."""
     try:
         return json.loads(frr.show(cmd))
     except Exception as exc:
@@ -37,49 +42,87 @@ def _frr_fetch(frr: "FRRClient", cmd: str) -> dict | list:
         return {}
 
 
-def _frr_fetch_text(frr: "FRRClient", cmd: str) -> str:
-    """Run a vtysh command; return raw text or empty string on error."""
-    try:
-        return frr.show(cmd)
-    except Exception as exc:
-        _LOG.debug("FRR command %r failed: %s", cmd, exc)
-        return ""
+def _get_areas(data: dict) -> list[dict]:
+    """Return the list of area dicts from a top-level FRR ISIS JSON response."""
+    areas = data.get("areas") or []
+    return areas if isinstance(areas, list) else []
+
+
+# ── 'show isis interface' ──────────────────────────────────────────────────────
+
+def render_interface(data: dict, filter_iface: str | None = None) -> str:
+    """Render IS-IS interface info from 'show isis interface json'.
+
+    FRR 8.x structure:
+      {"areas": [{"area": "default", "circuits": [
+        {"circuit": 0, "interface": {"name": "ens34", "state": "Up", ...}}
+      ]}]}
+    """
+    circuits: list[dict] = []
+    for area in _get_areas(data):
+        for c in area.get("circuits") or []:
+            ifc = c.get("interface")
+            if isinstance(ifc, dict) and ifc.get("name"):
+                circuits.append(ifc)
+
+    if not circuits:
+        return "IS-IS instance: default\n\nNo IS-IS interfaces configured.\n"
+
+    lines = ["IS-IS instance: default", ""]
+    hdr = f"{'Interface':<12}  {'CircID':<8}  {'State':<6}  {'Type':<8}  Level"
+    lines.append(hdr)
+    lines.append("-" * 50)
+
+    for ifc in circuits:
+        name: str = ifc.get("name", "?")
+        if filter_iface and filter_iface != name:
+            continue
+        cid: str = ifc.get("circuit-id", "?")
+        state: str = ifc.get("state", "?")
+        typ: str = ifc.get("type", "?")
+        level: str = ifc.get("level", "?")
+        lines.append(f"{name:<12}  {cid:<8}  {state:<6}  {typ:<8}  {level}")
+
+    if len(lines) == 3:  # only header + separator, nothing matched filter
+        lines.append(f"No IS-IS interface matching {filter_iface!r}.")
+
+    return "\n".join(lines) + "\n"
 
 
 # ── 'show isis adjacency' ──────────────────────────────────────────────────────
 
-def _state_str(state: str) -> str:
-    mapping = {"Up": "Up", "Down": "Down", "Init": "Init", "Failed": "Failed"}
-    return mapping.get(state, state)
-
-
 def render_adjacency(data: dict, filter_id: str | None = None) -> str:
-    """Render adjacency table from 'show isis neighbor json'."""
-    # FRR returns {"default": {"adjacencies": [...]}} or {"areas": {...}}
-    adjacencies: list[dict] = []
-    if isinstance(data, dict):
-        for area_data in data.values():
-            if isinstance(area_data, dict):
-                adjs = area_data.get("adjacencies") or []
-                adjacencies.extend(adjs)
+    """Render adjacency table from 'show isis neighbor json'.
+
+    FRR 8.x structure:
+      {"areas": [{"area": "default", "circuits": [
+        {"circuit": 0, "adjacencies": [{"sysId": "...", ...}]}
+      ]}]}
+    """
+    adjacencies: list[tuple[str, dict]] = []  # (interface_name, adj_dict)
+    for area in _get_areas(data):
+        for c in area.get("circuits") or []:
+            ifc_name = (c.get("interface") or {}).get("name") or "?"
+            for adj in c.get("adjacencies") or []:
+                if isinstance(adj, dict):
+                    adjacencies.append((ifc_name, adj))
 
     if not adjacencies:
         return "IS-IS instance: default\n\nNo IS-IS adjacencies found.\n"
 
     lines = ["IS-IS instance: default", ""]
-    hdr = f"{'Interface':<12}  {'System ID':<16}  {'State':<6}  {'Hold':<5}  {'SNPA'}"
+    hdr = f"{'Interface':<12}  {'System ID':<20}  {'State':<6}  {'Hold':<5}  SNPA"
     lines.append(hdr)
-    lines.append("-" * 60)
+    lines.append("-" * 65)
 
-    for adj in adjacencies:
+    for ifc_name, adj in adjacencies:
         sys_id: str = adj.get("sysId") or adj.get("systemId") or "?"
         if filter_id and filter_id not in sys_id:
             continue
-        iface: str = adj.get("interface") or "?"
-        state: str = _state_str(adj.get("state") or "?")
+        state: str = adj.get("state") or "?"
         hold: int = adj.get("holdtimer") or adj.get("holdTimer") or 0
         snpa: str = adj.get("snpa") or "?"
-        lines.append(f"{iface:<12}  {sys_id:<16}  {state:<6}  {hold:<5}  {snpa}")
+        lines.append(f"{ifc_name:<12}  {sys_id:<20}  {state:<6}  {hold:<5}  {snpa}")
 
     return "\n".join(lines) + "\n"
 
@@ -87,117 +130,100 @@ def render_adjacency(data: dict, filter_id: str | None = None) -> str:
 # ── 'show isis database' ───────────────────────────────────────────────────────
 
 def render_database(data: dict, detail: bool = False) -> str:
-    """Render IS-IS link-state database from 'show isis database json'."""
-    lsps: list[dict] = []
-    if isinstance(data, dict):
-        for area_data in data.values():
-            if isinstance(area_data, dict):
-                entries = area_data.get("lsps") or []
-                lsps.extend(entries)
+    """Render IS-IS link-state database from 'show isis database json'.
 
-    if not lsps:
+    FRR 8.x structure:
+      {"areas": [{"area": {"name": "default"}, "levels": [
+        {"id": 1, "lsp": {"id": "nos-dev.00-00"}, "seq-number": "0x00000002", ...}
+      ]}]}
+    """
+    entries: list[tuple[int, dict]] = []  # (level, lsp_dict)
+    for area in _get_areas(data):
+        for lvl in area.get("levels") or []:
+            level_id: int = lvl.get("id", 0)
+            lsp = lvl.get("lsp")
+            if isinstance(lsp, dict):
+                lsp["_level"] = level_id
+                lsp["_pdu_len"] = lvl.get("pdu-len")
+                lsp["_seq"] = lvl.get("seq-number")
+                lsp["_chksum"] = lvl.get("chksum")
+                lsp["_holdtime"] = lvl.get("holdtime")
+                lsp["_att_p_ol"] = lvl.get("att-p-ol", "0/0/0")
+                entries.append((level_id, lsp))
+
+    if not entries:
         return "IS-IS instance: default\n\nIS-IS link-state database is empty.\n"
 
     lines = ["IS-IS instance: default", ""]
 
-    if detail:
-        for lsp in lsps:
-            lsp_id: str = lsp.get("lspId") or lsp.get("LSPid") or "?"
-            seq: str = str(lsp.get("seqNumber") or lsp.get("seqNum") or "?")
-            checksum: str = str(lsp.get("checksum") or "?")
-            lifetime: int = lsp.get("remainingLifetime") or lsp.get("lifetime") or 0
-            lines.append(f"LSP ID: {lsp_id}")
+    for level_id, lsp in entries:
+        lsp_id: str = lsp.get("id", "?")
+        seq: str = lsp.get("_seq") or "?"
+        chksum: str = lsp.get("_chksum") or "?"
+        holdtime = lsp.get("_holdtime") or 0
+        att_p_ol: str = lsp.get("_att_p_ol", "0/0/0")
+        own: str = lsp.get("own", " ")
+
+        if detail:
+            lines.append(f"IS-IS Level-{level_id} Link State Database:")
+            lines.append(f"  LSP ID:    {lsp_id}")
             lines.append(f"  Sequence:  {seq}")
-            lines.append(f"  Checksum:  {checksum}")
-            lines.append(f"  Lifetime:  {lifetime}")
-            tlvs = lsp.get("tlvs") or []
-            for tlv in tlvs:
-                lines.append(f"  {tlv}")
+            lines.append(f"  Checksum:  {chksum}")
+            lines.append(f"  Lifetime:  {holdtime}")
+            lines.append(f"  A/P/OL:    {att_p_ol}")
+            lines.append(f"  Flags:     {own.strip()}")
             lines.append("")
-    else:
-        hdr = f"{'LSP ID':<28}  {'Seq':<10}  {'Checksum':<10}  {'Lifetime':<8}  A/L/P/OL"
-        lines.append(hdr)
-        lines.append("-" * 70)
-        for lsp in lsps:
-            lsp_id = lsp.get("lspId") or lsp.get("LSPid") or "?"
-            seq = hex(lsp.get("seqNumber") or lsp.get("seqNum") or 0)
-            checksum = hex(lsp.get("checksum") or 0)
-            lifetime = lsp.get("remainingLifetime") or lsp.get("lifetime") or 0
-            att = lsp.get("attached") or 0
+        else:
+            level_header = f"IS-IS Level-{level_id} Link State Database:"
+            if level_header not in lines:
+                lines.append(level_header)
+                hdr = f"  {'LSP ID':<26}  {'Seq':<12}  {'Checksum':<10}  {'Holdtime':<8}  A/P/OL"
+                lines.append(hdr)
+                lines.append("  " + "-" * 70)
+            own_marker = own if own.strip() else " "
             lines.append(
-                f"{lsp_id:<28}  {seq:<10}  {checksum:<10}  {lifetime:<8}  "
-                f"{att}/0/0/0"
+                f"  {own_marker}{lsp_id:<25}  {seq:<12}  {chksum:<10}  {holdtime:<8}  {att_p_ol}"
             )
 
     return "\n".join(lines) + "\n"
 
 
-# ── 'show isis interface' ──────────────────────────────────────────────────────
-
-def render_interface(data: dict, filter_iface: str | None = None) -> str:
-    """Render IS-IS interface info from 'show isis interface json'."""
-    interfaces: dict[str, dict] = {}
-    if isinstance(data, dict):
-        for area_data in data.values():
-            if isinstance(area_data, dict):
-                ifaces = area_data.get("interfaces") or {}
-                interfaces.update(ifaces)
-
-    if not interfaces:
-        return "IS-IS instance: default\n\nNo IS-IS interfaces configured.\n"
-
-    lines = ["IS-IS instance: default", ""]
-
-    for iface_name in sorted(interfaces):
-        if filter_iface and filter_iface != iface_name:
-            continue
-        ifc = interfaces[iface_name]
-        state: str = "Enabled" if ifc.get("state") == "Up" or ifc.get("running") else "Disabled"
-        circuit_type: str = ifc.get("circuitType") or ifc.get("type") or "broadcast"
-        level: str = ifc.get("level") or "L1L2"
-        metric: int = ifc.get("metric") or 10
-        adj_count: int = ifc.get("adjacencyCount") or 0
-
-        lines.append(f"Interface: {iface_name}")
-        lines.append(f"  State       : {state}")
-        lines.append(f"  Circuit type: {circuit_type}")
-        lines.append(f"  Level       : {level}")
-        lines.append(f"  Metric      : {metric}")
-        lines.append(f"  Adjacencies : {adj_count}")
-        lines.append("")
-
-    return "\n".join(lines)
-
-
 # ── 'show isis summary' ────────────────────────────────────────────────────────
 
 def render_summary(data: dict) -> str:
-    """Render IS-IS summary from 'show isis summary json'."""
+    """Render IS-IS summary from 'show isis summary json'.
+
+    FRR 8.x structure:
+      {"vrf": "default", "system-id": "...", "areas": [{"area": "default", "net": "..."}]}
+    """
     if not data:
         return f"{_NOT_RUNNING}\n"
 
-    # FRR wraps in instance name key ("default")
-    inst = data.get("default") or data
-    if not inst:
-        return f"{_NOT_RUNNING}\n"
-
-    sys_id: str = inst.get("sysId") or inst.get("systemId") or "?"
-    level: str = inst.get("isType") or inst.get("level") or "L1L2"
-    net: str = inst.get("net") or inst.get("NET") or "?"
-    area: str = inst.get("area") or "?"
-    adj_up: int = inst.get("adjacencies") or 0
-    lsp_count: int = inst.get("lsps") or 0
+    sys_id: str = data.get("system-id") or "?"
+    uptime: str = data.get("up-time") or "?"
+    n_areas: int = data.get("number-areas") or 0
+    vrf: str = data.get("vrf") or "default"
 
     lines = [
         "IS-IS instance: default",
         "",
-        f"System ID : {sys_id}",
-        f"IS type   : {level}",
-        f"NET       : {net}",
-        f"Area      : {area}",
-        f"Adjacencies up: {adj_up}",
-        f"LSPs in database: {lsp_count}",
+        f"VRF        : {vrf}",
+        f"System ID  : {sys_id}",
+        f"Up time    : {uptime}",
+        f"Areas      : {n_areas}",
     ]
+
+    for area in _get_areas(data):
+        area_name: str = area.get("area") or "?"
+        net: str = area.get("net") or "?"
+        lines.append("")
+        lines.append(f"Area: {area_name}")
+        lines.append(f"  NET: {net}")
+        for lvl in area.get("levels") or []:
+            lid = lvl.get("id", "?")
+            last_spf = lvl.get("last-run-elapsed") or "never"
+            lines.append(f"  Level {lid}: last SPF {last_spf} ago")
+
     return "\n".join(lines) + "\n"
 
 
@@ -213,11 +239,10 @@ def show_isis(
         return _NOT_RUNNING
 
     if not args:
-        # Default: show adjacency
-        data = _frr_fetch(frr, "show isis neighbor json")
+        data = _frr_fetch(frr, "show isis interface json")
         if not data:
             return _NOT_RUNNING
-        return render_adjacency(data)
+        return render_interface(data)
 
     sub_raw = args[0].lower()
     sub, err = resolve_prefix(sub_raw, _ISIS_SUBCMDS)
@@ -244,8 +269,6 @@ def show_isis(
         if not data:
             return _NOT_RUNNING
         filter_iface = rest[0] if rest else None
-        if alias_fn and filter_iface:
-            filter_iface = alias_fn(filter_iface)
         return render_interface(data, filter_iface=filter_iface)
 
     if sub == "summary":

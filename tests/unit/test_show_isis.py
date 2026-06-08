@@ -1,4 +1,4 @@
-"""Unit tests for nos.cli.commands.show.isis."""
+"""Unit tests for nos.cli.commands.show.isis — FRR 8.x JSON format."""
 from __future__ import annotations
 
 import json
@@ -15,87 +15,114 @@ from nos.cli.commands.show.isis import (
 )
 
 
-# ── Fixtures ──────────────────────────────────────────────────────────────────
+# ── FRR 8.x fixtures ──────────────────────────────────────────────────────────
+
+IFACE_DATA = {
+    "areas": [
+        {
+            "area": "default",
+            "circuits": [
+                {
+                    "circuit": 0,
+                    "interface": {
+                        "name": "ens34",
+                        "circuit-id": "0x0",
+                        "state": "Up",
+                        "type": "p2p",
+                        "level": "L1L2",
+                    },
+                },
+                {
+                    "circuit": 0,
+                    "interface": {
+                        "name": "lo0",
+                        "circuit-id": "0x0",
+                        "state": "Up",
+                        "type": "lan",
+                        "level": "L1L2",
+                    },
+                },
+            ],
+        }
+    ]
+}
 
 ADJ_DATA = {
-    "default": {
-        "adjacencies": [
-            {
-                "interface": "eth0",
-                "sysId": "rtr02.00",
-                "state": "Up",
-                "holdtimer": 27,
-                "snpa": "aabb.ccdd.eeff",
-            },
-            {
-                "interface": "eth1",
-                "sysId": "rtr03.00",
-                "state": "Down",
-                "holdtimer": 0,
-                "snpa": "1122.3344.5566",
-            },
-        ]
-    }
+    "areas": [
+        {
+            "area": "default",
+            "circuits": [
+                {
+                    "circuit": 0,
+                    "interface": {"name": "ens34"},
+                    "adjacencies": [
+                        {
+                            "sysId": "rtr02.00",
+                            "state": "Up",
+                            "holdtimer": 27,
+                            "snpa": "aabb.ccdd.eeff",
+                        }
+                    ],
+                },
+                {
+                    "circuit": 0,
+                    "interface": {"name": "lo0"},
+                },
+            ],
+        }
+    ]
 }
 
 DB_DATA = {
-    "default": {
-        "lsps": [
-            {
-                "lspId": "rtr01.00-00",
-                "seqNumber": 17,
-                "checksum": 0xABCD,
-                "remainingLifetime": 1199,
-                "attached": 1,
-                "tlvs": [],
-            },
-            {
-                "lspId": "rtr02.00-00",
-                "seqNumber": 9,
-                "checksum": 0x1234,
-                "remainingLifetime": 800,
-                "attached": 0,
-                "tlvs": [],
-            },
-        ]
-    }
-}
-
-IFACE_DATA = {
-    "default": {
-        "interfaces": {
-            "eth0": {
-                "state": "Up",
-                "circuitType": "point-to-point",
-                "level": "L2",
-                "metric": 10,
-                "adjacencyCount": 1,
-            },
-            "lo0": {
-                "state": "Up",
-                "circuitType": "loopback",
-                "level": "L1L2",
-                "metric": 0,
-                "adjacencyCount": 0,
-            },
+    "areas": [
+        {
+            "area": {"name": "default"},
+            "levels": [
+                {
+                    "id": 1,
+                    "lsp": {"id": "nos-dev.00-00", "own": "*"},
+                    "pdu-len": 75,
+                    "seq-number": "0x00000002",
+                    "chksum": "0x68e8",
+                    "holdtime": 988,
+                    "att-p-ol": "0/0/0",
+                    "count": 2,
+                },
+                {
+                    "id": 2,
+                    "lsp": {"id": "nos-dev.00-00", "own": "*"},
+                    "pdu-len": 75,
+                    "seq-number": "0x00000002",
+                    "chksum": "0x68e8",
+                    "holdtime": 990,
+                    "att-p-ol": "0/0/0",
+                    "count": 2,
+                },
+            ],
         }
-    }
+    ]
 }
 
 SUMMARY_DATA = {
-    "default": {
-        "sysId": "0000.0101.0101",
-        "isType": "level-2-only",
-        "net": "49.0001.0000.0101.0101.00",
-        "area": "49.0001",
-        "adjacencies": 1,
-        "lsps": 2,
-    }
+    "vrf": "default",
+    "process-id": 12345,
+    "system-id": "0010.0100.1001",
+    "up-time": "3d14h33m",
+    "number-areas": 1,
+    "areas": [
+        {
+            "area": "default",
+            "net": "49.0001.0010.0100.1001.00",
+            "levels": [
+                {"id": 1, "last-run-elapsed": "00:03:27"},
+                {"id": 2, "last-run-elapsed": "00:03:27"},
+            ],
+        }
+    ],
 }
 
 
 def _frr(responses: dict) -> MagicMock:
-    """Build a mock FRRClient that maps vtysh commands to JSON responses."""
     frr = MagicMock()
 
     def show_side_effect(cmd: str) -> str:
@@ -108,54 +135,92 @@ def _frr(responses: dict) -> MagicMock:
     return frr
 
 
+# ── render_interface ──────────────────────────────────────────────────────────
+
+class TestRenderInterface:
+    def test_renders_both_interfaces(self):
+        out = render_interface(IFACE_DATA)
+        assert "ens34" in out
+        assert "lo0" in out
+
+    def test_renders_state_and_type(self):
+        out = render_interface(IFACE_DATA)
+        assert "Up" in out
+        assert "p2p" in out
+        assert "lan" in out
+
+    def test_filter_by_name(self):
+        out = render_interface(IFACE_DATA, filter_iface="ens34")
+        assert "ens34" in out
+        assert "lo0" not in out
+
+    def test_filter_no_match(self):
+        out = render_interface(IFACE_DATA, filter_iface="eth99")
+        assert "ens34" not in out
+        assert "lo0" not in out
+
+    def test_empty_data(self):
+        out = render_interface({})
+        assert "No IS-IS interfaces configured" in out
+
+    def test_areas_with_no_circuits(self):
+        data = {"areas": [{"area": "default", "circuits": []}]}
+        out = render_interface(data)
+        assert "No IS-IS interfaces configured" in out
+
+    def test_circuit_without_interface(self):
+        data = {"areas": [{"area": "default", "circuits": [{"circuit": 0}]}]}
+        out = render_interface(data)
+        assert "No IS-IS interfaces configured" in out
+
+
 # ── render_adjacency ──────────────────────────────────────────────────────────
 
 class TestRenderAdjacency:
-    def test_renders_table(self):
+    def test_renders_adjacency(self):
         out = render_adjacency(ADJ_DATA)
-        assert "IS-IS instance: default" in out
-        assert "eth0" in out
+        assert "ens34" in out
         assert "rtr02.00" in out
         assert "Up" in out
         assert "aabb.ccdd.eeff" in out
 
-    def test_renders_down_adjacency(self):
-        out = render_adjacency(ADJ_DATA)
-        assert "rtr03.00" in out
-        assert "Down" in out
-
     def test_filter_by_sysid(self):
         out = render_adjacency(ADJ_DATA, filter_id="rtr02")
         assert "rtr02.00" in out
-        assert "rtr03.00" not in out
+
+    def test_filter_no_match(self):
+        out = render_adjacency(ADJ_DATA, filter_id="rtr99")
+        # header present but no rows matching
+        assert "rtr99" not in out
+
+    def test_no_adjacencies(self):
+        data = {"areas": [{"area": "default", "circuits": [{"circuit": 0}]}]}
+        out = render_adjacency(data)
+        assert "No IS-IS adjacencies" in out
 
     def test_empty_data(self):
         out = render_adjacency({})
-        assert "No IS-IS adjacencies" in out
-
-    def test_no_data_key(self):
-        out = render_adjacency({"default": {}})
         assert "No IS-IS adjacencies" in out
 
 
 # ── render_database ───────────────────────────────────────────────────────────
 
 class TestRenderDatabase:
-    def test_renders_table(self):
+    def test_renders_lsp_entries(self):
         out = render_database(DB_DATA)
-        assert "IS-IS instance: default" in out
-        assert "rtr01.00-00" in out
-        assert "rtr02.00-00" in out
+        assert "nos-dev.00-00" in out
+        assert "0x00000002" in out
+        assert "0x68e8" in out
 
-    def test_renders_seq_checksum(self):
+    def test_renders_both_levels(self):
         out = render_database(DB_DATA)
-        assert "0x11" in out  # hex(17)
-        assert "0xabcd" in out
+        assert "Level-1" in out
+        assert "Level-2" in out
 
     def test_detail_mode(self):
         out = render_database(DB_DATA, detail=True)
-        assert "rtr01.00-00" in out
         assert "Sequence" in out
+        assert "Checksum" in out
         assert "Lifetime" in out
 
     def test_empty_database(self):
@@ -163,49 +228,24 @@ class TestRenderDatabase:
         assert "empty" in out.lower()
 
 
-# ── render_interface ──────────────────────────────────────────────────────────
-
-class TestRenderInterface:
-    def test_renders_all_interfaces(self):
-        out = render_interface(IFACE_DATA)
-        assert "eth0" in out
-        assert "lo0" in out
-        assert "point-to-point" in out
-
-    def test_filter_by_name(self):
-        out = render_interface(IFACE_DATA, filter_iface="eth0")
-        assert "eth0" in out
-        assert "lo0" not in out
-
-    def test_shows_metric_and_level(self):
-        out = render_interface(IFACE_DATA)
-        assert "L2" in out
-        assert "10" in out
-
-    def test_empty_interfaces(self):
-        out = render_interface({})
-        assert "No IS-IS interfaces" in out
-
-
 # ── render_summary ────────────────────────────────────────────────────────────
 
 class TestRenderSummary:
     def test_renders_system_id(self):
         out = render_summary(SUMMARY_DATA)
-        assert "0000.0101.0101" in out
+        assert "0010.0100.1001" in out
 
     def test_renders_net(self):
         out = render_summary(SUMMARY_DATA)
-        assert "49.0001.0000.0101.0101.00" in out
+        assert "49.0001.0010.0100.1001.00" in out
 
-    def test_renders_level(self):
+    def test_renders_uptime(self):
         out = render_summary(SUMMARY_DATA)
-        assert "level-2-only" in out
+        assert "3d14h33m" in out
 
-    def test_renders_counts(self):
+    def test_renders_area(self):
         out = render_summary(SUMMARY_DATA)
-        assert "1" in out  # adjacencies
-        assert "2" in out  # lsps
+        assert "default" in out
 
     def test_empty_data(self):
         out = render_summary({})
@@ -219,66 +259,65 @@ class TestShowISIS:
         out = show_isis([], frr=None)
         assert "not running" in out.lower()
 
-    def test_no_args_shows_adjacency(self):
-        frr = _frr({"neighbor": ADJ_DATA})
+    def test_no_args_shows_interfaces(self):
+        frr = _frr({"interface": IFACE_DATA})
         out = show_isis([], frr=frr)
-        assert "rtr02.00" in out
+        assert "ens34" in out
+
+    def test_interface_subcommand(self):
+        frr = _frr({"interface": IFACE_DATA})
+        out = show_isis(["interface"], frr=frr)
+        assert "ens34" in out
+        assert "lo0" in out
+
+    def test_interface_with_filter(self):
+        frr = _frr({"interface": IFACE_DATA})
+        out = show_isis(["interface", "ens34"], frr=frr)
+        assert "ens34" in out
+        assert "lo0" not in out
 
     def test_adjacency_subcommand(self):
         frr = _frr({"neighbor": ADJ_DATA})
         out = show_isis(["adjacency"], frr=frr)
         assert "rtr02.00" in out
-        assert "Up" in out
 
     def test_adjacency_with_filter(self):
         frr = _frr({"neighbor": ADJ_DATA})
         out = show_isis(["adjacency", "rtr02"], frr=frr)
         assert "rtr02.00" in out
-        assert "rtr03.00" not in out
 
     def test_database_subcommand(self):
         frr = _frr({"database": DB_DATA})
         out = show_isis(["database"], frr=frr)
-        assert "rtr01.00-00" in out
+        assert "nos-dev.00-00" in out
 
     def test_database_detail(self):
         frr = _frr({"database": DB_DATA})
         out = show_isis(["database", "detail"], frr=frr)
         assert "Sequence" in out
 
-    def test_interface_subcommand(self):
-        frr = _frr({"interface": IFACE_DATA})
-        out = show_isis(["interface"], frr=frr)
-        assert "eth0" in out
-
-    def test_interface_with_filter(self):
-        frr = _frr({"interface": IFACE_DATA})
-        out = show_isis(["interface", "eth0"], frr=frr)
-        assert "eth0" in out
-        assert "lo0" not in out
-
     def test_summary_subcommand(self):
         frr = _frr({"summary": SUMMARY_DATA})
         out = show_isis(["summary"], frr=frr)
-        assert "0000.0101.0101" in out
+        assert "0010.0100.1001" in out
 
     def test_prefix_adj_expands(self):
         frr = _frr({"neighbor": ADJ_DATA})
         out = show_isis(["adj"], frr=frr)
         assert "rtr02.00" in out
 
-    def test_prefix_db_expands(self):
-        frr = _frr({"database": DB_DATA})
-        out = show_isis(["dat"], frr=frr)
-        assert "rtr01.00-00" in out
+    def test_prefix_int_expands(self):
+        frr = _frr({"interface": IFACE_DATA})
+        out = show_isis(["int"], frr=frr)
+        assert "ens34" in out
 
     def test_unknown_subcommand(self):
         frr = _frr({})
         out = show_isis(["foobar"], frr=frr)
         assert "error" in out.lower()
 
-    def test_frr_failure_adjacency(self):
+    def test_frr_failure_returns_not_running(self):
         frr = MagicMock()
         frr.show.side_effect = Exception("isisd not running")
-        out = show_isis(["adjacency"], frr=frr)
+        out = show_isis(["interface"], frr=frr)
         assert "not running" in out.lower()
