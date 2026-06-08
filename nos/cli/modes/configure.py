@@ -135,6 +135,108 @@ def _find_value_split(tokens: list[str]) -> int:
     return len(tokens)
 
 
+def _parse_multi_value_set(
+    tokens: list[str],
+) -> list[tuple[list[str], Optional[str]]]:
+    """Parse a multi-value JunOS set command into (path_tokens, value_token) pairs.
+
+    Walks CONFIG_TREE left to right.  When a static-child key maps to a value
+    leaf (``is_value=True``), the next token is consumed as the scalar value and
+    the pair is recorded; parsing then continues at the *same* node level.
+    Presence-flag children are recorded with ``value_token=None`` and parsing
+    continues at the same level.  Container and dynamic children deepen the
+    current path.  When all tokens are consumed any un-recorded trailing path
+    is emitted as a final ``(path, None)`` entry (presence or container target).
+
+    Returns ``[]`` on encountering an unknown/unmodelled token so the caller
+    can fall back to the legacy :func:`_find_value_split` path.
+    """
+    from nos.cli.completer import CONFIG_TREE  # avoid circular import at module load
+
+    results: list[tuple[list[str], Optional[str]]] = []
+    node = CONFIG_TREE
+    path: list[str] = []
+    last_record_depth = -1  # depth(path) at the time of the last record
+    i = 0
+
+    while i < len(tokens):
+        tok = tokens[i]
+
+        # Static keyword children take priority over the dynamic child.
+        if tok in node.children:
+            child = node.children[tok]
+            if child.is_value:
+                # Consume key + value token pair; stay at current node.
+                if i + 1 >= len(tokens):
+                    return []  # key with no following value — unknown intent
+                results.append((path + [tok], tokens[i + 1]))
+                last_record_depth = len(path)
+                i += 2
+                continue
+            if child.is_presence:
+                # Presence flag: record and stay at current node.
+                results.append((path + [tok], None))
+                last_record_depth = len(path)
+                i += 1
+                continue
+            # Container child: navigate deeper.
+            path = path + [tok]
+            node = child
+            i += 1
+            continue
+
+        # Dynamic child (interface name, IP prefix, user name, etc.)
+        if node.dynamic_child is not None:
+            dyn = node.dynamic_child
+            path = path + [tok]
+            if dyn.is_presence:
+                # E.g. policy-options prefix-list <name> <prefix>
+                results.append((path, None))
+                last_record_depth = len(path)
+                i += 1
+                if i < len(tokens):
+                    return []  # extra tokens after dynamic-presence — fall back
+                continue
+            node = dyn
+            i += 1
+            continue
+
+        # Unknown token: cannot model — tell caller to use legacy behaviour.
+        return []
+
+    # If navigation moved deeper than the last recorded point, the remaining
+    # path is itself a set target (presence flag or container node → {}).
+    if len(path) > last_record_depth:
+        results.append((path, None))
+
+    return results
+
+
+def _apply_container_fix(partial: dict, path_tokens: list[str]) -> None:
+    """Replace True with {} at *path_tokens* in *partial* when the tree node is a container.
+
+    ``from_set_commands`` always stores bare paths as ``True``; for nodes that
+    are proper container dicts (e.g. ``InetAddress``) the stored value should
+    be ``{}`` so schema validation passes.  Presence-flag nodes keep ``True``.
+    """
+    from nos.cli.completer import CONFIG_TREE, navigate_tree  # avoid circular import
+    final_node = navigate_tree(CONFIG_TREE, path_tokens)
+    if (final_node is None
+            or final_node.is_presence
+            or final_node.is_value):
+        return
+    leaf_path = [t.replace("-", "_") for t in _merge_compound_tokens(path_tokens)]
+    node: Any = partial
+    for key in leaf_path[:-1]:
+        if not isinstance(node, dict):
+            return
+        node = node.get(key)
+    if isinstance(node, dict):
+        last_key = leaf_path[-1]
+        if node.get(last_key) is True:
+            node[last_key] = {}
+
+
 def _quote_value(s: str) -> str:
     """Wrap *s* in double-quotes, escaping any embedded backslashes or quotes."""
     escaped = s.replace("\\", "\\\\").replace('"', '\\"')
@@ -274,15 +376,32 @@ class ConfigureMode:
             _deep_merge(self.store.candidate, partial)
             return ""
 
-        # Use the config tree to find where the value begins.
-        # Tokens *before* split_at are path components (left as-is so that
-        # the serialiser handles hyphen→underscore conversion and dynamic keys
-        # such as IP prefixes).  Tokens *at or after* split_at are the value;
-        # plain strings must be double-quoted so from_set_commands treats them
-        # as string scalars rather than presence flags.
-        # Integers are never quoted: from_set_commands detects them and stores
-        # them as int, which is what schema fields like vlan-id and AS numbers
-        # expect.
+        # Try multi-value parsing (JunOS-style: multiple key=value pairs on one
+        # line).  If the parser returns [] it encountered an unknown/unmodelled
+        # token and we fall back to the legacy _find_value_split() path so that
+        # unmodelled config sections continue to work unchanged.
+        parsed = _parse_multi_value_set(full_args)
+
+        if parsed:
+            for path_tokens, value_token in parsed:
+                if value_token is None:
+                    cmd = "set " + " ".join(path_tokens)
+                elif _is_int(value_token):
+                    cmd = "set " + " ".join(path_tokens) + " " + value_token
+                else:
+                    cmd = "set " + " ".join(path_tokens) + " " + _quote_value(value_token)
+                partial = from_set_commands([cmd])
+                if not partial:
+                    return "error: invalid set arguments"
+                if value_token is None:
+                    _apply_container_fix(partial, path_tokens)
+                _deep_merge(self.store.candidate, partial)
+            return ""
+
+        # Legacy single-value path (unmodelled tokens or unknown config sections).
+        # Tokens before split_at are path components; tokens at/after are the
+        # value.  Plain strings are double-quoted so from_set_commands treats them
+        # as string scalars rather than presence flags.  Integers are never quoted.
         split_at = _find_value_split(full_args)
 
         parts: list[str] = []
@@ -296,29 +415,8 @@ class ConfigureMode:
         if not partial:
             return "error: invalid set arguments"
 
-        # When all tokens are path components (pure presence path), check if
-        # the final config-tree node is a container dict (_n node, not a
-        # presence flag or value leaf).  If so, store {} so that the value
-        # round-trips correctly through the schema validator — e.g. an IP
-        # address key under "address" should map to {} (InetAddress defaults),
-        # not True.
         if split_at == len(full_args):
-            from nos.cli.completer import CONFIG_TREE, navigate_tree
-            final_node = navigate_tree(CONFIG_TREE, full_args)
-            if (final_node is not None
-                    and not final_node.is_presence
-                    and not final_node.is_value):
-                leaf_path = [tok.replace("-", "_") for tok in _merge_compound_tokens(full_args)]
-                node: Any = partial
-                for key in leaf_path[:-1]:
-                    if not isinstance(node, dict):
-                        node = None
-                        break
-                    node = node.get(key)
-                if isinstance(node, dict):
-                    last_key = leaf_path[-1]
-                    if node.get(last_key) is True:
-                        node[last_key] = {}
+            _apply_container_fix(partial, full_args)
 
         _deep_merge(self.store.candidate, partial)
         return ""
