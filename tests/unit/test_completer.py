@@ -172,10 +172,13 @@ class TestCompleteConfigTokens:
         # All root keywords start with empty prefix → all returned
         assert len(results) > 0
 
-    def test_no_completions_past_value_node(self):
-        # After "host-name" (is_value), the next token is the value
+    def test_sibling_completions_after_value_node(self):
+        # After "host-name" (is_value) and its value, should show sibling system properties
+        # This allows users to set multiple configuration options at the same level
         results = complete_config_tokens(["system", "host-name", "nos01"], True, [])
-        assert results == []
+        kws = [c.text for c in results]
+        assert "domain-name" in kws, f"domain-name missing; got {kws}"
+        assert "host-name" in kws, f"host-name missing; got {kws}"
 
     def test_routing_options_children(self):
         results = complete_config_tokens(["routing-options"], True, [])
@@ -545,3 +548,30 @@ class TestDottedUnitCompletion:
         kws = complete("set int ens34.101 ", CLIMode.CONFIGURE)
         assert "family" in kws
         assert "vlan-id" in kws
+
+
+class TestNATStaticRuleCompletion:
+    """Completions for security nat static rule configuration."""
+
+    def test_nat_static_rule_keyword(self):
+        kws = complete("set security nat static rule ", CLIMode.CONFIGURE)
+        # After 'rule' we expect a dynamic hint, but no actual keywords
+        assert kws == []  # no static keywords, just dynamic <rule-name> hint
+
+    def test_nat_static_rule_after_name_shows_source_translated(self):
+        # After entering rule name, should see 'source' and 'translated' options
+        kws = complete("set security nat static rule R1 ", CLIMode.CONFIGURE)
+        assert "source" in kws, f"source missing from {kws}"
+        assert "translated" in kws, f"translated missing from {kws}"
+
+    def test_nat_static_rule_after_source_value_shows_translated(self):
+        # After entering source value, should see 'translated' as sibling
+        kws = complete("set security nat static rule R1 source 10.0.0.2/32 ", CLIMode.CONFIGURE)
+        assert "translated" in kws, f"translated missing from {kws}"
+        assert "source" in kws, f"source missing from {kws} (user may set multiple)"
+
+    def test_nat_static_rule_after_translated_value_shows_source(self):
+        # After entering translated value, should see 'source' as sibling
+        kws = complete("set security nat static rule R1 translated 172.18.4.44 ", CLIMode.CONFIGURE)
+        assert "source" in kws, f"source missing from {kws}"
+        assert "translated" in kws, f"translated missing from {kws}"

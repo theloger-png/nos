@@ -374,3 +374,69 @@ def test_family_iso_no_address_round_trip():
     original = "set interfaces lo0 family iso"
     parsed = from_set_commands([original])
     assert parsed["interfaces"]["lo0"]["family_iso"] is True
+
+
+# ---------------------------------------------------------------------------
+# NAT static rules
+# ---------------------------------------------------------------------------
+
+def test_nat_static_rule_source_and_translated():
+    """Parse NAT static rule with both source and translated values."""
+    cmds = [
+        'set security nat static rule R1 source "10.0.0.2/32"',
+        'set security nat static rule R1 translated "172.18.4.44"',
+    ]
+    result = from_set_commands(cmds)
+    rule = result["security"]["nat"]["static"]["rule"]["R1"]
+    assert rule["source"] == "10.0.0.2/32"
+    assert rule["translated"] == "172.18.4.44"
+
+
+def test_nat_static_rule_roundtrip():
+    """NAT static rule survives a round-trip conversion."""
+    cfg = {
+        "security": {
+            "nat": {
+                "static": {
+                    "rule": {
+                        "R1": {
+                            "source": "10.0.0.2/32",
+                            "translated": "172.18.4.44",
+                        }
+                    }
+                }
+            }
+        }
+    }
+    cmds = to_set_commands(cfg)
+    assert has_cmd(cmds, 'source "10.0.0.2/32"')
+    assert has_cmd(cmds, 'translated "172.18.4.44"')
+    recovered = from_set_commands(cmds)
+    assert to_set_commands(recovered) == cmds
+
+
+def test_nat_static_rule_unquoted_values_incorrect():
+    """Show what happens with unquoted values (incorrect usage).
+
+    Users must quote values when entering set commands.
+    This test documents why the user got a validation error.
+    """
+    # INCORRECT: unquoted values cause incorrect parsing
+    incorrect_cmd = 'set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44'
+    parsed = from_set_commands([incorrect_cmd])
+
+    # This creates an incorrect nested structure instead of two separate fields
+    assert parsed["security"]["nat"]["static"]["rule"]["R1"]["source"]["10.0.0.2/32"]["translated"]["172.18.4.44"] is True
+
+
+def test_nat_static_rule_quoted_values_correct():
+    """Show the correct way to set NAT static rule values."""
+    # CORRECT: quoted values create proper field structure
+    cmds = [
+        'set security nat static rule R1 source "10.0.0.2/32"',
+        'set security nat static rule R1 translated "172.18.4.44"',
+    ]
+    parsed = from_set_commands(cmds)
+    rule = parsed["security"]["nat"]["static"]["rule"]["R1"]
+    assert rule["source"] == "10.0.0.2/32"
+    assert rule["translated"] == "172.18.4.44"

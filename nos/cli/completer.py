@@ -643,9 +643,12 @@ def complete_config_tokens(
     walk_tokens = tokens if completing_new else tokens[:-1]
 
     walked: list[str] = list(edit_path)
+    parent_node = None
     for token in walk_tokens:
         if node.is_value or node.is_presence:
-            return []
+            # We've reached a value or presence node. After a value, show siblings at parent level.
+            return _completions_at_node(parent_node, prefix, store, walked, show_hints) if parent_node else []
+        parent_node = node
         if node.children:
             resolved, err = resolve_prefix(token, list(node.children.keys()))
             if resolved is not None:
@@ -657,6 +660,7 @@ def complete_config_tokens(
                     if m:
                         walked.extend([m.group(1), "unit", m.group(2)])
                         node = _advance_past_unit(node.dynamic_child, m.group(2))
+                        parent_node = node
                         continue
                 walked.append(token)
                 node = node.dynamic_child
@@ -668,6 +672,7 @@ def complete_config_tokens(
                 if m:
                     walked.extend([m.group(1), "unit", m.group(2)])
                     node = _advance_past_unit(node.dynamic_child, m.group(2))
+                    parent_node = node
                     continue
             walked.append(token)
             node = node.dynamic_child
