@@ -148,6 +148,9 @@ def build_config_tree() -> ConfigNode:
                 "address": _d("IPv6 address", "<ipv6/prefix>",
                                ConfigNode(help="IPv6 address/prefix")),
             }),
+            "iso": _n("ISO/CLNS family (IS-IS)", {
+                "address": _v("NSAP/NET address", "<49.XXXX.XXXX.XXXX.XXXX.00>"),
+            }),
             "ethernet-switching": _n("Ethernet switching", {
                 "interface-mode": _e("Port mode", ["access", "trunk"]),
                 "vlan": _n("VLAN membership", {
@@ -174,6 +177,9 @@ def build_config_tree() -> ConfigNode:
             "inet6": _n("IPv6 family (routed port)", {
                 "address": _d("IPv6 address", "<ipv6/prefix>",
                                ConfigNode(help="IPv6 address/prefix")),
+            }),
+            "iso": _n("ISO/CLNS family (IS-IS)", {
+                "address": _v("NSAP/NET address", "<49.XXXX.XXXX.XXXX.XXXX.00>"),
             }),
         }),
         "unit": _d("Logical unit number", "<0-16384>", unit_inner),

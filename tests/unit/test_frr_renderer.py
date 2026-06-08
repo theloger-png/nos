@@ -159,3 +159,55 @@ def test_render_full_router_config(renderer):
     assert "metric-style wide" in out
     assert "router bgp 65000" in out
     assert "neighbor 2.2.2.2 description rtr02" in out
+
+
+# ---------------------------------------------------------------------------
+# family iso
+# ---------------------------------------------------------------------------
+
+def test_render_family_iso_loopback(renderer):
+    config = {
+        "interfaces": {
+            "lo0": {
+                "family_iso": {"address": "49.0001.0000.0101.0101.00"},
+            }
+        }
+    }
+    out = renderer.render(config)
+    assert "interface lo0" in out
+    assert "iso enable" in out
+    assert "iso address 49.0001.0000.0101.0101.00" in out
+
+
+def test_render_family_iso_included_in_isis_stanza(renderer):
+    config = {
+        "routing_options": {"router_id": "1.1.1.1"},
+        "interfaces": {
+            "lo0": {
+                "family_iso": {"address": "49.0001.0000.0101.0101.00"},
+                "family_inet": {"address": {"1.1.1.1/32": {}}},
+            }
+        },
+        "protocols": {
+            "isis": {
+                "interface": {
+                    "eth0": {"point_to_point": True},
+                    "lo0": {},
+                }
+            }
+        },
+    }
+    out = renderer.render(config)
+    assert "iso address 49.0001.0000.0101.0101.00" in out
+    assert "ip address 1.1.1.1/32" in out
+    assert "router isis default" in out
+
+
+def test_render_no_iso_when_not_configured(renderer):
+    config = {
+        "interfaces": {
+            "lo0": {"family_inet": {"address": {"1.1.1.1/32": {}}}},
+        }
+    }
+    out = renderer.render(config)
+    assert "iso" not in out

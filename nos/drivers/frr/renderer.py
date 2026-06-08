@@ -11,7 +11,8 @@ from nos.drivers.frr.isis import ISISGenerator
 def _has_ip_addresses(iface: Dict[str, Any]) -> bool:
     inet = (iface.get("family_inet") or {}).get("address") or {}
     inet6 = (iface.get("family_inet6") or {}).get("address") or {}
-    return bool(inet or inet6)
+    iso_addr = (iface.get("family_iso") or {}).get("address")
+    return bool(inet or inet6 or iso_addr)
 
 
 class FRRRenderer:
@@ -160,6 +161,10 @@ class FRRRenderer:
             lines.append(f" ip address {addr}")
         for addr in (iface_data.get("family_inet6") or {}).get("address") or {}:
             lines.append(f" ipv6 address {addr}")
+        iso_addr = (iface_data.get("family_iso") or {}).get("address")
+        if iso_addr:
+            lines.append(f" iso enable")
+            lines.append(f" iso address {iso_addr}")
 
         if isis_iface_cfg is not None:
             lines += self._isis.render_interface_body(iface_name, isis_iface_cfg)

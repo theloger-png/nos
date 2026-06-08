@@ -345,3 +345,32 @@ def test_roundtrip_unit_vlan_id():
     assert any("vlan-id 100" in c for c in cmds), f"vlan-id not emitted: {cmds}"
     recovered = from_set_commands(cmds)
     assert to_set_commands(recovered) == cmds
+
+
+# ---------------------------------------------------------------------------
+# family iso
+# ---------------------------------------------------------------------------
+
+def test_family_iso_to_set_commands():
+    config = {
+        "interfaces": {
+            "lo0": {
+                "family_iso": {"address": "49.0001.0000.0101.0101.00"},
+            }
+        }
+    }
+    cmds = to_set_commands(config)
+    assert has_cmd(cmds, 'set interfaces lo0 family iso address "49.0001.0000.0101.0101.00"')
+
+
+def test_family_iso_round_trip():
+    original = "set interfaces lo0 family iso address \"49.0001.0000.0101.0101.00\""
+    parsed = from_set_commands([original])
+    assert parsed["interfaces"]["lo0"]["family_iso"]["address"] == "49.0001.0000.0101.0101.00"
+
+
+def test_family_iso_no_address_round_trip():
+    # presence only (no address) → just the family marker
+    original = "set interfaces lo0 family iso"
+    parsed = from_set_commands([original])
+    assert parsed["interfaces"]["lo0"]["family_iso"] is True

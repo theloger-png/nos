@@ -5,6 +5,10 @@ import re
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
+_NET_RE = re.compile(
+    r"^[0-9a-fA-F]{2}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.00$"
+)
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
@@ -231,6 +235,25 @@ class FamilyInet6(BaseModel):
         return _validate_address_dict_keys(v, "inet6")
 
 
+class FamilyIso(BaseModel):
+    """IS-IS ISO/CLNS address family.
+
+    Carries the NSAP/NET address used by isisd (e.g. 49.0001.0000.0101.0101.00).
+    """
+
+    address: Optional[str] = None
+
+    @field_validator("address")
+    @classmethod
+    def validate_net(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None and not _NET_RE.match(v):
+            raise ValueError(
+                f"Invalid ISO NET address {v!r}. "
+                "Expected format: 49.XXXX.XXXX.XXXX.XXXX.00"
+            )
+        return v
+
+
 class VlanMembers(BaseModel):
     members: List[Union[int, str]] = []
 
@@ -258,6 +281,7 @@ class UnitConfig(BaseModel):
     family_ethernet_switching: Optional[EthernetSwitching] = None
     family_inet: Optional[FamilyInet] = None
     family_inet6: Optional[FamilyInet6] = None
+    family_iso: Optional[FamilyIso] = None
 
 
 class InterfaceConfig(BaseModel):
@@ -268,6 +292,7 @@ class InterfaceConfig(BaseModel):
     disable: bool = False
     family_inet: Optional[FamilyInet] = None
     family_inet6: Optional[FamilyInet6] = None
+    family_iso: Optional[FamilyIso] = None
     # Keys are unit numbers stored as strings (JSON object keys are always strings)
     unit: Optional[Dict[str, UnitConfig]] = None
 

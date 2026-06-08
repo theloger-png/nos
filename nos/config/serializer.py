@@ -22,6 +22,7 @@ def _j2k(token: str) -> str:
 _COMPOUND_TOKENS: dict[tuple[str, str], str] = {
     ("family", "inet"):               "family-inet",
     ("family", "inet6"):              "family-inet6",
+    ("family", "iso"):                "family-iso",
     ("family", "ethernet-switching"): "family-ethernet-switching",
 }
 
@@ -29,6 +30,7 @@ _COMPOUND_TOKENS: dict[tuple[str, str], str] = {
 _COMPOUND_KEY_EXPANSION: dict[str, list[str]] = {
     "family_inet":              ["family", "inet"],
     "family_inet6":             ["family", "inet6"],
+    "family_iso":               ["family", "iso"],
     "family_ethernet_switching": ["family", "ethernet-switching"],
 }
 
