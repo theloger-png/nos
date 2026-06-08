@@ -43,6 +43,8 @@ class ConfigNode:
     is_presence: bool = False
     # True → token matching <name>.<digits> is expanded to <name> unit <digits>
     expand_dotted_unit: bool = False
+    # True → dynamic values come from interfaces list with ".0" unit suffix appended
+    isis_interface: bool = False
 
 
 # ── tree builder helpers ────────────────────────────────────────────────────
@@ -251,9 +253,12 @@ def build_config_tree() -> ConfigNode:
         "rip":       _p("Redistribute RIP routes"),
     }
 
+    isis_iface_node = _d("IS-IS interface", "<et0.0|lo0.0>", isis_iface_inner)
+    isis_iface_node.isis_interface = True
+
     protocols_node = _n("Routing protocols", {
         "isis": _n("IS-IS protocol", {
-            "interface": _d("IS-IS interface", "<interface-name>", isis_iface_inner),
+            "interface": isis_iface_node,
             "level": _n("IS-IS level parameters", {
                 "1": _n("Level 1", {"wide-metrics-only": _p("Use wide metrics only")}),
                 "2": _n("Level 2", {"wide-metrics-only": _p("Use wide metrics only")}),
@@ -518,7 +523,35 @@ def _completions_at_node(
 
     # Dynamic child: real values from config + hint
     if node.dynamic_child is not None:
-        if store is not None:
+        if node.isis_interface and store is not None:
+            # IS-IS interfaces: offer already-configured names from candidate,
+            # plus all running interfaces with ".0" unit suffix as suggestions.
+            seen: set[str] = set()
+            for val in _candidate_keys(store, path_so_far):
+                if val.startswith(prefix):
+                    results.append(
+                        Completion(val, -len(prefix),
+                                   display_meta=node.dynamic_child.help)
+                    )
+                    seen.add(val)
+            try:
+                cfg = store.get_running()
+                sys_cfg = cfg.get("system") or {}
+                if sys_cfg.get("interface_rename", False):
+                    from nos.utils.interface_alias import get_alias_map
+                    ifaces = sorted(get_alias_map().values())
+                else:
+                    ifaces = sorted(cfg.get("interfaces", {}).keys())
+                for iface in ifaces:
+                    unit_name = f"{iface}.0"
+                    if unit_name.startswith(prefix) and unit_name not in seen:
+                        results.append(
+                            Completion(unit_name, -len(prefix),
+                                       display_meta=node.dynamic_child.help)
+                        )
+            except Exception:
+                pass
+        elif store is not None:
             for val in _candidate_keys(store, path_so_far):
                 if val.startswith(prefix):
                     results.append(
@@ -526,7 +559,7 @@ def _completions_at_node(
                                    display_meta=node.dynamic_child.help)
                     )
         # Show hint when requested and no prefix/values available
-        elif show_hints and not prefix and not results:
+        if show_hints and not prefix and not results:
             results.append(
                 Completion(node.dynamic_hint, display_meta=node.help)
             )

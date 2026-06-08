@@ -530,6 +530,40 @@ def test_isis_interface_exists_valid():
     )
 
 
+def test_isis_interface_unit_notation_valid():
+    """et1.0 in protocols isis → base interface et1 looked up, passes validation."""
+    assert_valid(
+        {
+            "interfaces": {
+                "et1": {"family_inet": {"address": {"10.0.0.1/30": {}}}},
+                "lo0": {"family_inet": {"address": {"1.1.1.1/32": {}}}},
+            },
+            "protocols": {
+                "isis": {
+                    "interface": {
+                        "et1.0": {"point_to_point": True},
+                        "lo0.0": {},
+                    }
+                }
+            },
+        }
+    )
+
+
+def test_isis_interface_unit_notation_missing_base_fails():
+    """et1.0 in protocols isis → base et1 not in interfaces → error."""
+    assert_invalid(
+        {
+            "interfaces": {"lo0": {}},
+            "protocols": {
+                "isis": {"interface": {"et1.0": {"point_to_point": True}}}
+            },
+        },
+        path_contains="protocols.isis.interface.et1.0",
+        msg_contains="not defined in interfaces",
+    )
+
+
 # ---------------------------------------------------------------------------
 # Cross-reference: BGP policy references
 # ---------------------------------------------------------------------------

@@ -169,7 +169,10 @@ class ConfigValidator:
 
         if config.protocols.isis:
             for iface_name in config.protocols.isis.interface:
-                if iface_name not in iface_names:
+                # IS-IS uses JunOS unit notation (lo0.0, et1.0); strip the unit
+                # suffix to find the parent interface in the interfaces stanza.
+                base_name = iface_name.rsplit(".", 1)[0] if "." in iface_name else iface_name
+                if base_name not in iface_names:
                     result.add_error(
                         f"protocols.isis.interface.{iface_name}",
                         f"Interface {iface_name!r} is not defined in interfaces",

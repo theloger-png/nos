@@ -211,3 +211,59 @@ def test_render_no_iso_when_not_configured(renderer):
     }
     out = renderer.render(config)
     assert "iso" not in out
+
+
+# ---------------------------------------------------------------------------
+# IS-IS interfaces with unit notation
+# ---------------------------------------------------------------------------
+
+def test_render_isis_interface_unit_notation(renderer):
+    """et1.0 in protocols isis interface → frr.conf uses et1 (strip .0)."""
+    config = {
+        "routing_options": {"router_id": "1.1.1.1"},
+        "interfaces": {
+            "et1": {"family_inet": {"address": {"10.0.0.1/30": {}}}},
+            "lo0": {"family_inet": {"address": {"1.1.1.1/32": {}}}},
+        },
+        "protocols": {
+            "isis": {
+                "interface": {
+                    "et1.0": {"point_to_point": True},
+                    "lo0.0": {},
+                }
+            }
+        },
+    }
+    out = renderer.render(config)
+    assert "interface et1" in out
+    assert "interface lo0" in out
+    assert "isis network point-to-point" in out
+    # unit suffix must not appear in frr.conf
+    assert "et1.0" not in out
+    assert "lo0.0" not in out
+
+
+def test_render_isis_multi_area_zone_with_unit_iface(renderer):
+    """Multi-area zone + unit-notation interfaces render correctly."""
+    config = {
+        "routing_options": {"router_id": "2.2.2.2"},
+        "interfaces": {
+            "et0": {"family_inet": {"address": {"10.1.1.1/30": {}}}},
+            "lo0": {
+                "family_iso": {"address": "49.0001.0002.0000.0202.0202.00"},
+                "family_inet": {"address": {"2.2.2.2/32": {}}},
+            },
+        },
+        "protocols": {
+            "isis": {
+                "interface": {
+                    "et0.0": {"point_to_point": True},
+                    "lo0.0": {},
+                }
+            }
+        },
+    }
+    out = renderer.render(config)
+    assert "interface et0" in out
+    assert "interface lo0" in out
+    assert "iso address 49.0001.0002.0000.0202.0202.00" in out
