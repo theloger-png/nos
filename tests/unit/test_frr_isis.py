@@ -114,6 +114,18 @@ def test_render_router_level1_only(gen):
     assert "level-1-only" in text
 
 
+def test_render_router_level2_only_global_level_disable(gen):
+    isis_cfg = {"level_1": {"disable": True}}
+    lines = gen.render_router(isis_cfg, router_id="1.1.1.1")
+    assert "is-type level-2-only" in "\n".join(lines)
+
+
+def test_render_router_level1_only_global_level_disable(gen):
+    isis_cfg = {"level_2": {"disable": True}}
+    lines = gen.render_router(isis_cfg, router_id="1.1.1.1")
+    assert "is-type level-1-only" in "\n".join(lines)
+
+
 def test_render_router_wide_metrics(gen):
     isis_cfg = {"level_2": {"wide_metrics_only": True}}
     lines = gen.render_router(isis_cfg, router_id="1.1.1.1")

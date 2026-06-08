@@ -396,6 +396,7 @@ class IsisInterfaceConfig(BaseModel):
 
 class IsisLevelConfig(BaseModel):
     wide_metrics_only: bool = False
+    disable: bool = False
 
 
 class IsisConfig(BaseModel):

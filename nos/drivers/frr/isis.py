@@ -79,11 +79,11 @@ class ISISGenerator:
         # Determine IS type from level config.
         l1 = isis_cfg.get("level_1") or {}
         l2 = isis_cfg.get("level_2") or {}
-        level_1_disable = any(
+        level_1_disable = l1.get("disable") or any(
             (ifc.get("level_1_disable") or False)
             for ifc in (isis_cfg.get("interface") or {}).values()
         )
-        level_2_disable = any(
+        level_2_disable = l2.get("disable") or any(
             (ifc.get("level_2_disable") or False)
             for ifc in (isis_cfg.get("interface") or {}).values()
         )

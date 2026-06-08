@@ -261,8 +261,14 @@ def build_config_tree() -> ConfigNode:
         "isis": _n("IS-IS protocol", {
             "interface": isis_iface_node,
             "level": _n("IS-IS level parameters", {
-                "1": _n("Level 1", {"wide-metrics-only": _p("Use wide metrics only")}),
-                "2": _n("Level 2", {"wide-metrics-only": _p("Use wide metrics only")}),
+                "1": _n("Level 1", {
+                    "wide-metrics-only": _p("Use wide metrics only"),
+                    "disable": _p("Disable IS-IS level 1 globally"),
+                }),
+                "2": _n("Level 2", {
+                    "wide-metrics-only": _p("Use wide metrics only"),
+                    "disable": _p("Disable IS-IS level 2 globally"),
+                }),
             }),
         }),
         "bgp": _n("BGP protocol", {
