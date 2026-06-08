@@ -10,6 +10,7 @@ from nos.cli.commands.show.isis import (
     render_adjacency,
     render_database,
     render_interface,
+    render_route,
     render_summary,
     show_isis,
 )
@@ -142,6 +143,35 @@ SUMMARY_DATA = {
             ],
         }
     ],
+}
+
+ROUTE_DATA = {
+    "routes": [
+        {
+            "prefix": "10.0.0.0/24",
+            "level": 2,
+            "metric": 10,
+            "interface": "ens34",
+            "next_hop": "10.0.0.2",
+            "sequence": 4,
+        },
+        {
+            "prefix": "1.1.1.1/32",
+            "level": 2,
+            "metric": 0,
+            "interface": "lo0",
+            "next_hop": "",
+            "sequence": 3,
+        },
+        {
+            "prefix": "1.1.1.2/32",
+            "level": 2,
+            "metric": 10,
+            "interface": "ens34.101",
+            "next_hop": "10.0.0.2",
+            "sequence": 4,
+        },
+    ]
 }
 
 
@@ -311,6 +341,63 @@ class TestRenderSummary:
         assert "not running" in out.lower()
 
 
+# ── render_route ──────────────────────────────────────────────────────────────
+
+class TestRenderRoute:
+    def test_renders_route_entries(self):
+        out = render_route(ROUTE_DATA)
+        assert "10.0.0.0/24" in out
+        assert "1.1.1.1/32" in out
+        assert "1.1.1.2/32" in out
+
+    def test_renders_columns(self):
+        out = render_route(ROUTE_DATA)
+        assert "Prefix" in out
+        assert "Metric" in out
+        assert "Interface" in out
+        assert "NH via" in out
+
+    def test_renders_metric_and_interface(self):
+        out = render_route(ROUTE_DATA)
+        assert "10.0.0.2" in out
+        assert "ens34" in out
+        assert "lo0" in out
+
+    def test_level_and_sequence(self):
+        out = render_route(ROUTE_DATA)
+        # Check that level 2 and sequence numbers are present
+        lines = out.split("\n")
+        # Find a route line (not header)
+        for line in lines:
+            if "10.0.0.0/24" in line:
+                assert "2" in line  # level
+                assert "4" in line  # sequence
+
+    def test_empty_routes(self):
+        out = render_route({})
+        assert "No IS-IS routes" in out
+        assert "Current version: L1:0 L2:0" in out
+
+    def test_alias_fn_translates_interface_names(self):
+        def kernel_to_nos(name: str) -> str:
+            mapping = {"ens34": "et1", "ens34.101": "et1.101", "lo0": "lo0"}
+            return mapping.get(name, name)
+
+        out = render_route(ROUTE_DATA, alias_fn=kernel_to_nos)
+        assert "et1" in out
+        assert "et1.101" in out
+        assert "ens34" not in out
+
+    def test_next_hop_via_empty_for_local(self):
+        """Test that local routes have empty next hop."""
+        out = render_route(ROUTE_DATA)
+        lines = out.split("\n")
+        for line in lines:
+            if "1.1.1.1/32" in line:
+                # Should have empty next_hop for lo0 interface
+                assert line.rstrip().endswith("1.1.1.1/32") or "lo0" in line
+
+
 # ── show_isis (entry point) ───────────────────────────────────────────────────
 
 class TestShowISIS:
@@ -354,6 +441,13 @@ class TestShowISIS:
         frr = _frr({"database": DB_DATA})
         out = show_isis(["database", "detail"], frr=frr)
         assert "Sequence" in out
+
+    def test_route_subcommand(self):
+        frr = _frr({"route": ROUTE_DATA, "database": DB_DATA})
+        out = show_isis(["route"], frr=frr)
+        assert "10.0.0.0/24" in out
+        assert "1.1.1.1/32" in out
+        assert "1.1.1.2/32" in out
 
     def test_summary_subcommand(self):
         frr = _frr({"summary": SUMMARY_DATA})

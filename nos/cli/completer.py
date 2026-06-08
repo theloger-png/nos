@@ -744,6 +744,7 @@ _ISIS_SUBCMDS: dict[str, str] = {
     "adjacency": "Show IS-IS adjacencies",
     "database":  "Show IS-IS link-state database",
     "interface": "Show IS-IS interface information",
+    "route":     "Show IS-IS routing table",
     "summary":   "Show IS-IS summary",
 }
 

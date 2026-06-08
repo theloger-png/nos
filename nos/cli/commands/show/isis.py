@@ -6,6 +6,7 @@ FRR 8.x JSON structure:
   show isis interface json → {"areas": [{"area": "default", "circuits": [...]}]}
   show isis neighbor json  → {"areas": [{"area": "default", "circuits": [...]}]}
   show isis database json  → {"areas": [{"area": {"name": "default"}, "levels": [...]}]}
+  show isis route json     → {"routes": [{"prefix": "...", "level": 2, ...}]}
   show isis summary json   → {"vrf": "...", "system-id": "...", "areas": [...]}
 
 Command variants:
@@ -13,6 +14,7 @@ Command variants:
   show isis adjacency [<system-id>]
   show isis database [detail]
   show isis interface [<name>]
+  show isis route
   show isis summary
 """
 from __future__ import annotations
@@ -29,7 +31,7 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 _NOT_RUNNING = "IS-IS is not running"
 
-_ISIS_SUBCMDS = ["adjacency", "database", "interface", "summary"]
+_ISIS_SUBCMDS = ["adjacency", "database", "interface", "route", "summary"]
 
 
 # ── Fetch helpers ──────────────────────────────────────────────────────────────
@@ -378,6 +380,87 @@ def render_summary(data: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+# ── 'show isis route' ──────────────────────────────────────────────────────────
+
+def _get_route_versions(frr: "FRRClient") -> tuple[int, int]:
+    """Extract max LSP sequence version for L1 and L2 from database.
+
+    Returns (l1_version, l2_version) as integers, defaulting to (0, 0).
+    """
+    try:
+        db_json = json.loads(frr.show("show isis database json"))
+        l1_ver, l2_ver = 0, 0
+        for area in _get_areas(db_json):
+            for lvl in area.get("levels") or []:
+                level_id: int = lvl.get("id", 0)
+                seq_str: str = lvl.get("seq-number") or "0x0"
+                try:
+                    seq_val = int(seq_str, 16) if isinstance(seq_str, str) else seq_str
+                    if level_id == 1:
+                        l1_ver = max(l1_ver, seq_val)
+                    elif level_id == 2:
+                        l2_ver = max(l2_ver, seq_val)
+                except (ValueError, TypeError):
+                    pass
+        return l1_ver, l2_ver
+    except Exception:
+        return 0, 0
+
+
+def render_route(
+    data: dict,
+    frr: Optional["FRRClient"] = None,
+    alias_fn: Optional[Callable[[str], str]] = None,
+) -> str:
+    """Render IS-IS routing table from 'show isis route json'.
+
+    FRR 8.x structure:
+      {"routes": [
+        {"prefix": "10.0.0.0/24", "level": 2, "metric": 10,
+         "interface": "eth1", "next_hop": "10.0.0.2", "sequence": 4}
+      ]}
+
+    JunOS format table with columns:
+      Prefix, L, Version, Metric, Type, Interface, NH via
+    """
+    routes: list[dict] = data.get("routes") or []
+
+    if not routes:
+        return "IS-IS routing table             Current version: L1:0 L2:0\n\nIPv4/IPv6 routes\nNo IS-IS routes.\n"
+
+    # Extract version numbers for the header
+    l1_ver, l2_ver = 0, 0
+    if frr:
+        l1_ver, l2_ver = _get_route_versions(frr)
+
+    lines = [
+        f"IS-IS routing table             Current version: L1:{l1_ver} L2:{l2_ver}",
+        "",
+        "IPv4/IPv6 routes",
+        f"{'Prefix':<20}  {'L':<8}  {'Version':<8}  {'Metric':<7}  {'Type':<5}  {'Interface':<15}  NH via",
+    ]
+
+    for route in routes:
+        prefix: str = route.get("prefix") or "?"
+        level: int = route.get("level") or 2
+        metric: int = route.get("metric") or 0
+        iface_name: str = route.get("interface") or ""
+        next_hop: str = route.get("next_hop") or ""
+        sequence: int = route.get("sequence") or 0
+
+        # Translate interface name if alias_fn provided
+        display_iface = alias_fn(iface_name) if alias_fn and iface_name else iface_name
+
+        # Type is always "L" (learned) for IS-IS routes
+        route_type = "L"
+
+        lines.append(
+            f"{prefix:<20}  {level:<8}  {sequence:<8}  {metric:<7}  {route_type:<5}  {display_iface:<15}  {next_hop}"
+        )
+
+    return "\n".join(lines) + "\n"
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def show_isis(
@@ -422,6 +505,12 @@ def show_isis(
         extensive = bool(rest and resolve_prefix(rest[0].lower(), ["extensive"])[0] == "extensive")
         filter_iface = rest[1] if len(rest) > 1 else rest[0] if rest and not extensive else None
         return render_interface(data, filter_iface=filter_iface, extensive=extensive, alias_fn=alias_fn)
+
+    if sub == "route":
+        data = _frr_fetch(frr, "show isis route json")
+        if not data:
+            return _NOT_RUNNING
+        return render_route(data, frr=frr, alias_fn=alias_fn)
 
     if sub == "summary":
         data = _frr_fetch(frr, "show isis summary json")
