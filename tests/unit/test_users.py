@@ -327,6 +327,6 @@ def test_serializer_emits_correct_set_command_path():
         }
     }
     cmds = to_set_commands(config)
-    class_cmd = [c for c in cmds if "user-class" in c or "user_class" in c]
-    assert class_cmd, f"Expected user class command, got: {cmds}"
+    class_cmd = [c for c in cmds if " class " in c]
+    assert class_cmd, f"Expected 'class' keyword in command, got: {cmds}"
     assert "super-user" in class_cmd[0]

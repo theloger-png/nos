@@ -56,6 +56,11 @@ _COMPOUND_KEY_EXPANSION: dict[str, list[str]] = {
     "then_destination_port":    ["then", "destination-port"],
 }
 
+# Internal snake_case key → CLI keyword (for field aliases where the CLI name differs from snake_case conversion)
+_FIELD_ALIAS_EXPANSION: dict[str, str] = {
+    "user_class": "class",
+}
+
 
 def _merge_compound_tokens(tokens: list[str]) -> list[str]:
     """Merge consecutive token pairs that form a single compound config key.
@@ -105,7 +110,12 @@ def _flatten(node: Any, path: list[str], out: list[str]) -> None:
             if expansion:
                 _flatten(value, path + expansion, out)
             else:
-                _flatten(value, path + [_k2j(str(key))], out)
+                # Check for field alias (e.g., user_class → class)
+                alias = _FIELD_ALIAS_EXPANSION.get(str(key))
+                if alias:
+                    _flatten(value, path + [alias], out)
+                else:
+                    _flatten(value, path + [_k2j(str(key))], out)
         return
     if isinstance(node, list):
         for item in node:

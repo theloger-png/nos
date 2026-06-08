@@ -9,7 +9,7 @@ _NET_RE = re.compile(
     r"^49(\.[0-9a-fA-F]{4})+\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.00$"
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, field_serializer
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +98,9 @@ class UserAuthentication(BaseModel):
 
 
 class UserConfig(BaseModel):
-    user_class: Optional[UserClassEnum] = None
+    model_config = ConfigDict(populate_by_name=True)
+
+    user_class: Optional[UserClassEnum] = Field(None, alias="class")
     authentication: UserAuthentication = UserAuthentication()
 
 
