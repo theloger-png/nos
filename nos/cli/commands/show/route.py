@@ -66,7 +66,9 @@ _FRR_PROTO: dict[str, tuple[str, int]] = {
     "ospf6":     ("OSPF",   10),
     "static":    ("Static",  5),
     "connected": ("Direct",  0),
-    "kernel":    ("Direct",  0),
+    # Routes installed in the kernel by external tools (e.g. pyroute2 static routes)
+    # appear in FRR as "kernel" protocol; they are operator-configured Static routes.
+    "kernel":    ("Static",  5),
     "local":     ("Local",   0),
     "rip":       ("RIP",   100),
     "ripng":     ("RIP",   100),
@@ -151,6 +153,54 @@ def _sort_key(prefix: str) -> tuple:
         return (int(net.network_address), net.prefixlen)
     except Exception:
         return (0, 0)
+
+
+def _lpm_filter(routes: list[Route], host_str: str) -> list[Route]:
+    """Return routes matching the longest prefix that covers host_str."""
+    try:
+        host = ipaddress.ip_address(host_str)
+    except ValueError:
+        return []
+
+    best_len = -1
+    for r in routes:
+        try:
+            net = ipaddress.ip_network(r.prefix, strict=False)
+            if host in net and net.prefixlen > best_len:
+                best_len = net.prefixlen
+        except (ValueError, TypeError):
+            pass
+
+    if best_len < 0:
+        return []
+
+    result = []
+    for r in routes:
+        try:
+            net = ipaddress.ip_network(r.prefix, strict=False)
+            if host in net and net.prefixlen == best_len:
+                result.append(r)
+        except (ValueError, TypeError):
+            pass
+    return result
+
+
+def _orlonger_filter(routes: list[Route], prefix_str: str) -> list[Route]:
+    """Return routes whose prefix is a subnet of (or equal to) prefix_str."""
+    try:
+        filter_net = ipaddress.ip_network(prefix_str, strict=False)
+    except ValueError:
+        return []
+
+    result = []
+    for r in routes:
+        try:
+            route_net = ipaddress.ip_network(r.prefix, strict=False)
+            if route_net.subnet_of(filter_net):
+                result.append(r)
+        except (ValueError, TypeError):
+            pass
+    return result
 
 
 # ── Kernel route reader ──────────────────────────────────────────────────────
@@ -262,7 +312,11 @@ def _parse_frr_json(
 
             proto_raw   = entry.get("protocol", "").lower()
             proto_name, default_pref = _FRR_PROTO.get(proto_raw, ("Unknown", 1))
-            distance    = entry.get("distance", default_pref)
+            # "kernel" routes: FRR assigns distance=0, but JunOS preference is 5
+            if proto_raw == "kernel":
+                distance = default_pref
+            else:
+                distance = entry.get("distance", default_pref)
             metric      = entry.get("metric", 0) or 0
             uptime      = entry.get("uptime", "00:00:00") or "00:00:00"
             selected    = bool(entry.get("selected",     False))
@@ -846,6 +900,7 @@ def show_route(
     detail       = False
     terse        = False
     hidden_only  = False
+    exact        = False
     prefix_filter: Optional[str] = None
     proto_filter:  Optional[str] = None
     table_filter: Optional[int] = None  # 4 for inet.0, 6 for inet6.0
@@ -859,6 +914,8 @@ def show_route(
             terse = True
         elif tok == "hidden":
             hidden_only = True
+        elif tok == "exact":
+            exact = True
         elif tok == "table":
             if i + 1 >= len(args):
                 return "error: 'table' requires a table name"
@@ -902,8 +959,17 @@ def show_route(
 
     # Apply prefix filter to both display and stat sets
     if prefix_filter:
-        all4 = [r for r in all4 if r.prefix == prefix_filter]
-        all6 = [r for r in all6 if r.prefix == prefix_filter]
+        if exact:
+            all4 = [r for r in all4 if r.prefix == prefix_filter]
+            all6 = [r for r in all6 if r.prefix == prefix_filter]
+        elif "/" not in prefix_filter:
+            # Host address (no prefix length): longest-match lookup
+            all4 = _lpm_filter(all4, prefix_filter)
+            all6 = _lpm_filter(all6, prefix_filter)
+        else:
+            # Prefix with length: show all routes within this prefix (orlonger)
+            all4 = _orlonger_filter(all4, prefix_filter)
+            all6 = _orlonger_filter(all6, prefix_filter)
 
     # Apply protocol filter
     if proto_filter:

@@ -1550,3 +1550,196 @@ class TestRouteCompletion:
     def test_detail_space_does_not_offer_protocol(self):
         kws = _complete_oper("show route detail ")
         assert "protocol" not in kws
+
+
+# ============================================================================
+# Bug fixes: protocol detection, LPM, orlonger
+# ============================================================================
+
+class TestFRRKernelProtocolIsStatic:
+    """Bug 1: FRR-reported 'kernel' routes must show as Static/5, not Direct/0."""
+
+    def test_kernel_proto_maps_to_static(self):
+        data = {
+            "8.8.8.8/32": [{
+                "protocol": "kernel",
+                "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "01:00:00",
+                "nexthops": [{"ip": "172.18.4.41", "interfaceName": "eth0", "active": True}],
+            }]
+        }
+        routes = _parse_frr_json(data, 4, None)
+        assert routes[0].protocol == "Static"
+        assert routes[0].preference == 5
+
+    def test_kernel_proto_default_route_is_static(self):
+        data = {
+            "0.0.0.0/0": [{
+                "protocol": "kernel",
+                "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "3d18h37m",
+                "nexthops": [{"ip": "172.18.4.41", "interfaceName": "ens33", "active": True}],
+            }]
+        }
+        routes = _parse_frr_json(data, 4, None)
+        assert routes[0].protocol == "Static"
+        assert routes[0].preference == 5
+
+    def test_connected_proto_still_direct(self):
+        data = {
+            "10.0.0.0/24": [{
+                "protocol": "connected",
+                "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "00:10:00",
+                "nexthops": [{"interfaceName": "eth0", "active": True}],
+            }]
+        }
+        routes = _parse_frr_json(data, 4, None)
+        assert routes[0].protocol == "Direct"
+        assert routes[0].preference == 0
+
+    def test_show_route_kernel_proto_displays_static(self):
+        frr = _make_frr({
+            "0.0.0.0/0": [{
+                "protocol": "kernel", "selected": True, "destSelected": True,
+                "installed": True, "distance": 0, "metric": 0, "uptime": "10:47:00",
+                "nexthops": [{"ip": "172.18.4.41", "interfaceName": "ens33", "active": True}],
+            }]
+        }, {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route([], frr=frr)
+        assert "Static" in out
+        assert "Direct" not in out
+        assert "[Static/5]" in out
+
+
+class TestHostAddressLPM:
+    """Bug 2: Host address without /prefix-len must do longest-match lookup."""
+
+    def _frr_data(self):
+        def _entry(proto, nh_ip=None, iface="eth0"):
+            e = {"protocol": proto, "selected": True, "destSelected": True,
+                 "installed": True, "distance": 0 if proto == "connected" else 5,
+                 "metric": 0, "uptime": "00:01:00", "nexthops": []}
+            if nh_ip:
+                e["nexthops"].append({"ip": nh_ip, "interfaceName": iface, "active": True})
+            else:
+                e["nexthops"].append({"interfaceName": iface, "active": True})
+            return e
+
+        return {
+            "0.0.0.0/0":    [_entry("static", "172.18.4.41")],
+            "8.8.8.0/24":   [_entry("static", "10.0.0.1")],
+            "8.8.8.8/32":   [_entry("static", "10.0.0.1")],
+            "10.0.0.0/24":  [_entry("connected")],
+        }
+
+    def test_host_address_finds_most_specific(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["8.8.8.8"], frr=frr)
+        assert "8.8.8.8/32" in out
+        assert "8.8.8.0/24" not in out
+        assert "0.0.0.0/0" not in out
+
+    def test_host_address_falls_back_to_less_specific(self):
+        data = {
+            "0.0.0.0/0":   [{"protocol": "static", "selected": True, "destSelected": True,
+                              "installed": True, "distance": 5, "metric": 0, "uptime": "01:00:00",
+                              "nexthops": [{"ip": "172.18.4.41", "interfaceName": "eth0", "active": True}]}],
+            "8.8.8.0/24":  [{"protocol": "static", "selected": True, "destSelected": True,
+                              "installed": True, "distance": 5, "metric": 0, "uptime": "01:00:00",
+                              "nexthops": [{"ip": "10.0.0.1", "interfaceName": "eth0", "active": True}]}],
+        }
+        frr = _make_frr(data, {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["8.8.8.8"], frr=frr)
+        assert "8.8.8.0/24" in out
+        assert "0.0.0.0/0" not in out
+
+    def test_host_address_uses_default_route_when_no_specific(self):
+        data = {
+            "0.0.0.0/0":    [{"protocol": "static", "selected": True, "destSelected": True,
+                               "installed": True, "distance": 5, "metric": 0, "uptime": "01:00:00",
+                               "nexthops": [{"ip": "172.18.4.41", "interfaceName": "eth0", "active": True}]}],
+            "10.0.0.0/24":  [{"protocol": "connected", "selected": True, "destSelected": True,
+                               "installed": True, "distance": 0, "metric": 0, "uptime": "01:00:00",
+                               "nexthops": [{"interfaceName": "eth0", "active": True}]}],
+        }
+        frr = _make_frr(data, {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["8.8.8.8"], frr=frr)
+        assert "0.0.0.0/0" in out
+        assert "10.0.0.0/24" not in out
+
+    def test_host_address_no_match(self):
+        frr = _make_frr({
+            "10.0.0.0/24": [{"protocol": "connected", "selected": True, "destSelected": True,
+                              "installed": True, "distance": 0, "metric": 0, "uptime": "01:00:00",
+                              "nexthops": [{"interfaceName": "eth0", "active": True}]}],
+        }, {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["192.0.2.1"], frr=frr)
+        assert "No routes found" in out
+
+
+class TestOrlonger:
+    """Bug 3: show route X/Y should show routes that are subnets of X/Y (orlonger)."""
+
+    def _entry(self, proto, nh_ip=None, iface="eth0"):
+        e = {"protocol": proto, "selected": True, "destSelected": True,
+             "installed": True, "distance": 5 if proto == "static" else 0,
+             "metric": 0, "uptime": "00:01:00", "nexthops": []}
+        if nh_ip:
+            e["nexthops"].append({"ip": nh_ip, "interfaceName": iface, "active": True})
+        else:
+            e["nexthops"].append({"interfaceName": iface, "active": True})
+        return e
+
+    def _frr_data(self):
+        return {
+            "0.0.0.0/0":    [self._entry("static", "172.18.4.41")],
+            "8.8.8.0/24":   [self._entry("static", "10.0.0.1")],
+            "8.8.8.8/32":   [self._entry("static", "10.0.0.1")],
+            "10.0.0.0/24":  [self._entry("connected")],
+        }
+
+    def test_prefix_shows_more_specific_routes(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["8.8.8.0/24"], frr=frr)
+        assert "8.8.8.0/24" in out
+        assert "8.8.8.8/32" in out
+        assert "0.0.0.0/0" not in out
+        assert "10.0.0.0/24" not in out
+
+    def test_default_route_filter_shows_all_ipv4(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["0.0.0.0/0"], frr=frr)
+        assert "0.0.0.0/0" in out
+        assert "8.8.8.0/24" in out
+        assert "8.8.8.8/32" in out
+        assert "10.0.0.0/24" in out
+
+    def test_exact_flag_limits_to_exact_prefix(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["8.8.8.0/24", "exact"], frr=frr)
+        assert "8.8.8.0/24" in out
+        assert "8.8.8.8/32" not in out
+        assert "0.0.0.0/0" not in out
+
+    def test_no_subnets_shows_only_exact(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["10.0.0.0/24"], frr=frr)
+        assert "10.0.0.0/24" in out
+        assert "0.0.0.0/0" not in out
+        assert "8.8.8.0/24" not in out
+
+    def test_prefix_no_match_returns_no_routes(self):
+        frr = _make_frr(self._frr_data(), {})
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["192.0.2.0/24"], frr=frr)
+        assert "No routes found" in out
