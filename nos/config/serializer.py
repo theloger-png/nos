@@ -17,6 +17,14 @@ def _j2k(token: str) -> str:
     return token.replace("-", "_")
 
 
+# Pairs of CLI keywords that appear as inline sibling key-value pairs on a
+# single set command line, e.g. "source 10.0.0.2/32 translated 172.18.4.44".
+# The tuple is (first_key, second_key); order matters for detection.
+_INLINE_SIBLING_PAIRS: set[tuple[str, str]] = {
+    ("source", "translated"),
+    ("translated", "source"),
+}
+
 # Two consecutive CLI tokens that together form a single JSON key.
 # Stored as (tok1, tok2) → JunOS-hyphen form so _j2k can finish the conversion.
 _COMPOUND_TOKENS: dict[tuple[str, str], str] = {
@@ -189,6 +197,45 @@ def _is_quoted(token: str) -> bool:
     return len(token) >= 2 and token[0] == '"' and token[-1] == '"'
 
 
+def _parse_inline_value(token: str) -> Any:
+    """Parse a token that is known to be a value (not a path component).
+
+    Unlike the main parser, unquoted tokens are returned as strings so that
+    bare IP addresses and prefixes are handled correctly.
+    """
+    if _is_quoted(token):
+        return token[1:-1]
+    if _is_integer(token):
+        return int(token)
+    return token
+
+
+def _find_inline_siblings(
+    tokens: list[str],
+) -> list[tuple[list[str], Any]] | None:
+    """Detect inline sibling key-value pairs within a token list.
+
+    When a command encodes multiple sibling fields on one line, e.g.
+      security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44
+    this function identifies the split point and returns a list of
+    (path_keys, value) tuples, one per sibling pair.
+
+    Returns None when no inline sibling pattern is detected.
+    """
+    for i in range(len(tokens) - 3):
+        if (tokens[i], tokens[i + 2]) in _INLINE_SIBLING_PAIRS:
+            prefix = tokens[:i]
+            results: list[tuple[list[str], Any]] = []
+            j = i
+            while j + 1 < len(tokens):
+                key = tokens[j]
+                val_tok = tokens[j + 1]
+                results.append((prefix + [key], _parse_inline_value(val_tok)))
+                j += 2
+            return results
+    return None
+
+
 # ---------------------------------------------------------------------------
 # from_set_commands — dict builder
 # ---------------------------------------------------------------------------
@@ -246,6 +293,14 @@ def from_set_commands(commands: list[str]) -> dict:
             continue
         tokens = _tokenize(raw[4:])
         if not tokens:
+            continue
+
+        # Check for inline sibling key-value pairs before normal scalar detection.
+        inline = _find_inline_siblings(tokens)
+        if inline is not None:
+            for path_keys, value in inline:
+                if path_keys:
+                    _insert(config, _merge_compound_tokens(path_keys), value)
             continue
 
         last = tokens[-1]

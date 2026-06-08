@@ -415,28 +415,26 @@ def test_nat_static_rule_roundtrip():
     assert to_set_commands(recovered) == cmds
 
 
-def test_nat_static_rule_unquoted_values_incorrect():
-    """Show what happens with unquoted values (incorrect usage).
+def test_nat_static_rule_inline_unquoted_single_command():
+    """Single unquoted command sets both source and translated correctly."""
+    from nos.config.schema import NatStaticRule
 
-    Users must quote values when entering set commands.
-    This test documents why the user got a validation error.
-    """
-    # INCORRECT: unquoted values cause incorrect parsing
-    incorrect_cmd = 'set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44'
-    parsed = from_set_commands([incorrect_cmd])
-
-    # This creates an incorrect nested structure instead of two separate fields
-    assert parsed["security"]["nat"]["static"]["rule"]["R1"]["source"]["10.0.0.2/32"]["translated"]["172.18.4.44"] is True
+    parsed = from_set_commands(
+        ["set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44"]
+    )
+    rule_dict = parsed["security"]["nat"]["static"]["rule"]["R1"]
+    rule = NatStaticRule(**rule_dict)
+    assert rule.source == "10.0.0.2/32"
+    assert rule.translated == "172.18.4.44"
 
 
-def test_nat_static_rule_quoted_values_correct():
-    """Show the correct way to set NAT static rule values."""
-    # CORRECT: quoted values create proper field structure
-    cmds = [
+def test_nat_static_rule_inline_two_commands_equivalent():
+    """Inline single-command and two quoted commands produce the same result."""
+    single = from_set_commands(
+        ["set security nat static rule R1 source 10.0.0.2/32 translated 172.18.4.44"]
+    )
+    two = from_set_commands([
         'set security nat static rule R1 source "10.0.0.2/32"',
         'set security nat static rule R1 translated "172.18.4.44"',
-    ]
-    parsed = from_set_commands(cmds)
-    rule = parsed["security"]["nat"]["static"]["rule"]["R1"]
-    assert rule["source"] == "10.0.0.2/32"
-    assert rule["translated"] == "172.18.4.44"
+    ])
+    assert single == two
