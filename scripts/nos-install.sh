@@ -328,8 +328,13 @@ read -r -d '' SUDOERS_SSH <<'SUDOERS_SSH_EOF' || true
 # Allow the nos service account to manage SSH server configuration.
 # These are needed by SshDriver in nos/drivers/kernel/ssh.py.
 nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/ssh/sshd_config.d/nos.conf
+nos ALL=(ALL) NOPASSWD: /bin/systemctl disable ssh.socket
+nos ALL=(ALL) NOPASSWD: /bin/systemctl stop ssh.socket
+nos ALL=(ALL) NOPASSWD: /bin/systemctl enable ssh
+nos ALL=(ALL) NOPASSWD: /bin/systemctl restart ssh
 nos ALL=(ALL) NOPASSWD: /bin/systemctl reload ssh
 nos ALL=(ALL) NOPASSWD: /bin/systemctl reload sshd
+nos ALL=(ALL) NOPASSWD: /bin/systemctl is-active ssh.socket
 SUDOERS_SSH_EOF
 
 # Add human user if present
@@ -341,8 +346,13 @@ if [[ -n "$HUMAN_USER" ]]; then
     SUDOERS_SSH+="
 # Allow the human user to manage SSH during development.
 $HUMAN_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/ssh/sshd_config.d/nos.conf
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl disable ssh.socket
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl stop ssh.socket
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl enable ssh
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl restart ssh
 $HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload ssh
-$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload sshd"
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload sshd
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl is-active ssh.socket"
 fi
 
 echo "$SUDOERS_SSH" > /etc/sudoers.d/nos-ssh

@@ -63,82 +63,157 @@ class TestSshDriver:
         """Test SshDriver.apply with default configuration."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        mock_run.return_value = MagicMock(returncode=0)
+        # Mock: socket is not active (returncode=1), then write succeeds, then restart succeeds
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # is-active check (socket not active)
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=0),  # restart ssh
+        ]
         driver = SshDriver()
         driver.apply()
 
-        assert mock_run.call_count == 2
-        # First call: write config
+        assert mock_run.call_count == 3
+        # First call: check if ssh.socket is active (fails, so socket is inactive)
         first_call = mock_run.call_args_list[0]
-        assert first_call[0][0][0:2] == ["sudo", "tee"]
-        assert "/etc/ssh/sshd_config.d/nos.conf" in first_call[0][0]
-        assert "Port 22" in first_call[1]["input"]
-        assert "Protocol 2" in first_call[1]["input"]
-        assert "PermitRootLogin no" in first_call[1]["input"]
+        assert first_call[0][0] == ["sudo", "systemctl", "is-active", "ssh.socket"]
 
-        # Second call: reload SSH
+        # Second call: write config
         second_call = mock_run.call_args_list[1]
-        assert second_call[0][0] == ["sudo", "systemctl", "reload", "ssh"]
+        assert second_call[0][0][0:2] == ["sudo", "tee"]
+        assert "/etc/ssh/sshd_config.d/nos.conf" in second_call[0][0]
+        assert "Port 22" in second_call[1]["input"]
+        assert "Protocol 2" in second_call[1]["input"]
+        assert "PermitRootLogin no" in second_call[1]["input"]
+
+        # Third call: restart SSH (changed from reload)
+        third_call = mock_run.call_args_list[2]
+        assert third_call[0][0] == ["sudo", "systemctl", "restart", "ssh"]
 
     @patch("subprocess.run")
     def test_ssh_driver_apply_custom_port(self, mock_run: MagicMock) -> None:
         """Test SshDriver.apply with custom port."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # is-active check (socket not active)
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=0),  # restart ssh
+        ]
         driver = SshDriver()
         driver.apply(port=2222)
 
-        first_call = mock_run.call_args_list[0]
-        assert "Port 2222" in first_call[1]["input"]
+        # Find the write config call (second call after socket check)
+        write_call = mock_run.call_args_list[1]
+        assert "Port 2222" in write_call[1]["input"]
 
     @patch("subprocess.run")
     def test_ssh_driver_apply_allow_root(self, mock_run: MagicMock) -> None:
         """Test SshDriver.apply with allow root login."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # is-active check (socket not active)
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=0),  # restart ssh
+        ]
         driver = SshDriver()
         driver.apply(root_login="allow")
 
-        first_call = mock_run.call_args_list[0]
-        assert "PermitRootLogin yes" in first_call[1]["input"]
+        # Find the write config call (second call after socket check)
+        write_call = mock_run.call_args_list[1]
+        assert "PermitRootLogin yes" in write_call[1]["input"]
 
     @patch("subprocess.run")
     def test_ssh_driver_apply_deny_password(self, mock_run: MagicMock) -> None:
         """Test SshDriver.apply with deny-password root login."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        mock_run.return_value = MagicMock(returncode=0)
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # is-active check (socket not active)
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=0),  # restart ssh
+        ]
         driver = SshDriver()
         driver.apply(root_login="deny-password")
 
-        first_call = mock_run.call_args_list[0]
-        assert "PermitRootLogin prohibit-password" in first_call[1]["input"]
+        # Find the write config call (second call after socket check)
+        write_call = mock_run.call_args_list[1]
+        assert "PermitRootLogin prohibit-password" in write_call[1]["input"]
 
     @patch("subprocess.run")
     def test_ssh_driver_write_failure(self, mock_run: MagicMock) -> None:
         """Test SshDriver.apply handles write failure gracefully."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        mock_run.return_value = MagicMock(returncode=1, stderr="Permission denied")
+        # Socket check fails (socket not active), then write fails
+        mock_run.side_effect = [
+            MagicMock(returncode=1),  # is-active check
+            MagicMock(returncode=1, stderr="Permission denied"),  # write config
+        ]
         driver = SshDriver()
         # Should not raise, just log error
         driver.apply()
 
     @patch("subprocess.run")
-    def test_ssh_driver_reload_failure(self, mock_run: MagicMock) -> None:
-        """Test SshDriver.apply handles reload failure gracefully."""
+    def test_ssh_driver_restart_failure(self, mock_run: MagicMock) -> None:
+        """Test SshDriver.apply handles restart failure gracefully."""
         from nos.drivers.kernel.ssh import SshDriver
 
-        # First call succeeds (write), second fails (reload)
+        # Socket check fails (inactive), write succeeds, restart fails
         mock_run.side_effect = [
-            MagicMock(returncode=0),
-            MagicMock(returncode=1, stderr="Failed to reload"),
+            MagicMock(returncode=1),  # is-active check
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=1, stderr="Failed to restart"),  # restart
         ]
         driver = SshDriver()
         # Should not raise, just log error
         driver.apply()
+
+    @patch("subprocess.run")
+    def test_ssh_driver_socket_deactivation(self, mock_run: MagicMock) -> None:
+        """Test SshDriver.apply disables ssh.socket when active."""
+        from nos.drivers.kernel.ssh import SshDriver
+
+        # Socket is active (returncode 0), deactivation succeeds, then config write and restart
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # is-active check (socket is active)
+            MagicMock(returncode=0),  # disable ssh.socket
+            MagicMock(returncode=0),  # stop ssh.socket
+            MagicMock(returncode=0),  # enable ssh
+            MagicMock(returncode=0),  # write config
+            MagicMock(returncode=0),  # restart ssh
+        ]
+        driver = SshDriver()
+        driver.apply(port=2222)
+
+        assert mock_run.call_count == 6
+        # Verify socket deactivation calls
+        calls = mock_run.call_args_list
+        assert calls[0][0][0] == ["sudo", "systemctl", "is-active", "ssh.socket"]
+        assert calls[1][0][0] == ["sudo", "systemctl", "disable", "ssh.socket"]
+        assert calls[2][0][0] == ["sudo", "systemctl", "stop", "ssh.socket"]
+        assert calls[3][0][0] == ["sudo", "systemctl", "enable", "ssh"]
+        # Verify config write
+        assert "Port 2222" in calls[4][1]["input"]
+        # Verify restart
+        assert calls[5][0][0] == ["sudo", "systemctl", "restart", "ssh"]
+
+    @patch("subprocess.run")
+    def test_ssh_driver_socket_deactivation_failure(self, mock_run: MagicMock) -> None:
+        """Test SshDriver.apply handles socket deactivation failure gracefully."""
+        from nos.drivers.kernel.ssh import SshDriver
+
+        # Socket is active but deactivation fails at disable step
+        mock_run.side_effect = [
+            MagicMock(returncode=0),  # is-active check (socket is active)
+            MagicMock(returncode=1, stderr="Failed to disable"),  # disable fails
+        ]
+        driver = SshDriver()
+        # Should not raise, just log error and return
+        driver.apply()
+
+        # Should only have made 2 calls (check and failed disable)
+        assert mock_run.call_count == 2
 
     def test_ssh_driver_map_root_login(self) -> None:
         """Test _map_root_login mapping."""

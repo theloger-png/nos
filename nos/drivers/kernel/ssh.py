@@ -27,6 +27,12 @@ class SshDriver:
             protocol_version: SSH protocol version (always "v2")
             root_login: Root login policy ("allow", "deny", "deny-password")
         """
+        # Disable systemd socket activation on Ubuntu 24.04+
+        # socket activation prevents sshd_config port changes.
+        if self._is_ssh_socket_active():
+            if not self._disable_ssh_socket_activation():
+                return
+
         root_login_sshd = self._map_root_login(root_login)
         config_lines = [
             "# BEGIN NOS MANAGED SSH CONFIG",
@@ -59,20 +65,67 @@ class SshDriver:
 
         try:
             result = subprocess.run(
-                ["sudo", "systemctl", "reload", "ssh"],
+                ["sudo", "systemctl", "restart", "ssh"],
                 capture_output=True,
                 text=True,
             )
             if result.returncode != 0:
                 log.error(
-                    "Failed to reload SSH (rc=%d): %s",
+                    "Failed to restart SSH (rc=%d): %s",
                     result.returncode,
                     result.stderr.strip(),
                 )
             else:
-                log.info("SSH service reloaded")
+                log.info("SSH service restarted")
         except Exception as exc:
-            log.error("Error reloading SSH service: %s", exc)
+            log.error("Error restarting SSH service: %s", exc)
+
+    def _is_ssh_socket_active(self) -> bool:
+        """Check if ssh.socket is active (Ubuntu 24.04+ socket activation)."""
+        try:
+            result = subprocess.run(
+                ["sudo", "systemctl", "is-active", "ssh.socket"],
+                capture_output=True,
+                text=True,
+            )
+            return result.returncode == 0
+        except Exception as exc:
+            log.debug("Error checking ssh.socket status: %s", exc)
+            return False
+
+    def _disable_ssh_socket_activation(self) -> bool:
+        """Disable systemd socket activation and enable classic sshd mode.
+
+        Returns:
+            True if successful, False if any step fails.
+        """
+        commands = [
+            (["sudo", "systemctl", "disable", "ssh.socket"], "disable ssh.socket"),
+            (["sudo", "systemctl", "stop", "ssh.socket"], "stop ssh.socket"),
+            (["sudo", "systemctl", "enable", "ssh"], "enable ssh"),
+        ]
+
+        for cmd, desc in commands:
+            try:
+                result = subprocess.run(
+                    cmd,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode != 0:
+                    log.error(
+                        "Failed to %s (rc=%d): %s",
+                        desc,
+                        result.returncode,
+                        result.stderr.strip(),
+                    )
+                    return False
+                log.info("Successfully %s", desc)
+            except Exception as exc:
+                log.error("Error during %s: %s", desc, exc)
+                return False
+
+        return True
 
     @staticmethod
     def _map_root_login(nos_value: str) -> str:
