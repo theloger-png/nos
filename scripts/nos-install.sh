@@ -232,6 +232,40 @@ else
     die "Sudoers file validation failed for /etc/sudoers.d/nos-dhclient"
 fi
 
+# ── 2i. sudoers rule — nft NAT table listing ───────────────────────────────────
+info "Installing sudoers rule for nft NAT table listing…"
+
+# Build the sudoers content
+read -r -d '' SUDOERS_NFT <<'SUDOERS_NFT_EOF' || true
+# Allow the nos service account to list nftables for NAT diagnostics.
+# This is needed by show security nat translations command.
+nos ALL=(ALL) NOPASSWD: /usr/sbin/nft list table inet nos_nat
+SUDOERS_NFT_EOF
+
+# Add human user if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_NFT+="
+# Allow the human user to list nftables during development.
+$HUMAN_USER ALL=(ALL) NOPASSWD: /usr/sbin/nft list table inet nos_nat"
+fi
+
+echo "$SUDOERS_NFT" > /etc/sudoers.d/nos-nft
+chmod 0440 /etc/sudoers.d/nos-nft
+
+# Validate the sudoers file
+if visudo -c -f /etc/sudoers.d/nos-nft 2>/dev/null; then
+    ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-nft."
+    if [[ -n "$HUMAN_USER" ]]; then
+        ok "  Added nft sudoers rules for user '$HUMAN_USER'."
+    fi
+else
+    die "Sudoers file validation failed for /etc/sudoers.d/nos-nft"
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos

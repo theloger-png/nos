@@ -97,7 +97,7 @@ def show_nat_translations() -> str:
     """Render 'show security nat translations' — raw nft table output."""
     try:
         result = subprocess.run(
-            ["nft", "list", "table", "inet", "nos_nat"],
+            ["sudo", "nft", "list", "table", "inet", "nos_nat"],
             capture_output=True,
             text=True,
         )

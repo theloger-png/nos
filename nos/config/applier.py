@@ -352,12 +352,11 @@ class ConfigApplier:
         old_config: Dict[str, Any],
         new_config: Dict[str, Any],
     ) -> None:
-        old_nat = (old_config.get("security") or {}).get("nat") or {}
         new_nat = (new_config.get("security") or {}).get("nat") or {}
-        if old_nat == new_nat:
+        if not new_nat:
             return
 
-        from nos.config.schema import NatConfig, SecurityConfig
+        from nos.config.schema import SecurityConfig
         from nos.drivers.kernel.nat import NatDriver
 
         log.info("Applying NAT config change")
