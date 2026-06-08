@@ -6,7 +6,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 _NET_RE = re.compile(
-    r"^[0-9a-fA-F]{2}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.00$"
+    r"^49(\.[0-9a-fA-F]{4})+\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.00$"
 )
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator

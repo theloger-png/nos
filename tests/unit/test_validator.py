@@ -895,27 +895,53 @@ def test_non_loopback_with_ethernet_switching_not_affected():
 # ---------------------------------------------------------------------------
 
 class TestFamilyIsoSchema:
-    def test_valid_net_address(self):
+    def test_valid_net_single_area_group(self):
         from nos.config.schema import FamilyIso
         f = FamilyIso(address="49.0001.0000.0101.0101.00")
         assert f.address == "49.0001.0000.0101.0101.00"
+
+    def test_valid_net_multi_area_group(self):
+        from nos.config.schema import FamilyIso
+        # area = 0001.0002 (two area groups)
+        f = FamilyIso(address="49.0001.0002.0000.0101.0101.00")
+        assert f.address == "49.0001.0002.0000.0101.0101.00"
+
+    def test_valid_net_three_area_groups(self):
+        from nos.config.schema import FamilyIso
+        f = FamilyIso(address="49.0001.0002.0003.0000.0101.0101.00")
+        assert f.address == "49.0001.0002.0003.0000.0101.0101.00"
 
     def test_no_address_is_valid(self):
         from nos.config.schema import FamilyIso
         f = FamilyIso()
         assert f.address is None
 
-    def test_invalid_net_format_rejected(self):
+    def test_invalid_plain_ip_rejected(self):
         from nos.config.schema import FamilyIso
-        import pytest
         with pytest.raises(Exception):
             FamilyIso(address="1.2.3.4")
 
-    def test_invalid_net_too_short_rejected(self):
+    def test_invalid_net_no_area_rejected(self):
+        # missing area — only sysid + 00, no area group
         from nos.config.schema import FamilyIso
-        import pytest
         with pytest.raises(Exception):
-            FamilyIso(address="49.0001.0000.0101.00")
+            FamilyIso(address="49.0000.0101.0101.00")
+
+    def test_invalid_net_missing_sysid_group_rejected(self):
+        # only 2 sysid groups instead of 3
+        from nos.config.schema import FamilyIso
+        with pytest.raises(Exception):
+            FamilyIso(address="49.0001.0101.0101.00")
+
+    def test_invalid_net_wrong_afi_rejected(self):
+        from nos.config.schema import FamilyIso
+        with pytest.raises(Exception):
+            FamilyIso(address="47.0001.0000.0101.0101.00")
+
+    def test_invalid_net_no_trailing_00_rejected(self):
+        from nos.config.schema import FamilyIso
+        with pytest.raises(Exception):
+            FamilyIso(address="49.0001.0000.0101.0101.01")
 
     def test_interface_config_accepts_family_iso(self):
         from nos.config.schema import InterfaceConfig, FamilyIso
