@@ -1178,6 +1178,32 @@ class TestShowRouteTable:
         assert "error" in out.lower()
         assert "requires a table name" in out.lower()
 
+    def test_table_inet_abbreviation_shows_ipv4(self):
+        """Test that 'show route table inet' works like 'show route table inet.0'."""
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet"], frr=frr)
+        assert "inet.0:" in out
+        assert "inet6.0:" not in out
+        assert "10.0.0.0/24" in out
+        assert "0.0.0.0/0" in out
+        assert "::1/128" not in out
+        assert "2001:db8::/32" not in out
+
+    def test_table_inet6_abbreviation_shows_ipv6(self):
+        """Test that 'show route table inet6' works like 'show route table inet6.0'."""
+        ipv4, ipv6 = self._frr_both_tables()
+        frr = _make_frr(ipv4, ipv6)
+        with patch(_PATCH_IPROUTE, None):
+            out = show_route(["table", "inet6"], frr=frr)
+        assert "inet.0:" not in out
+        assert "inet6.0:" in out
+        assert "10.0.0.0/24" not in out
+        assert "0.0.0.0/0" not in out
+        assert "::1/128" in out
+        assert "2001:db8::/32" in out
+
 
 # ============================================================================
 # Interface alias translation

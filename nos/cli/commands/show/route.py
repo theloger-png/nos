@@ -863,8 +863,12 @@ def show_route(
             if i + 1 >= len(args):
                 return "error: 'table' requires a table name"
             table_name = args[i + 1].lower()
-            if table_name == "inet.0":
+            if table_name == "inet":
                 table_filter = 4
+            elif table_name == "inet.0":
+                table_filter = 4
+            elif table_name == "inet6":
+                table_filter = 6
             elif table_name == "inet6.0":
                 table_filter = 6
             else:
