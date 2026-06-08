@@ -54,7 +54,7 @@ ADJ_DATA = {
             "circuits": [
                 {
                     "circuit": 0,
-                    "interface": {"name": "ens34"},
+                    "interface": "ens34",
                     "adjacencies": [
                         {
                             "sysId": "rtr02.00",
@@ -66,7 +66,7 @@ ADJ_DATA = {
                 },
                 {
                     "circuit": 0,
-                    "interface": {"name": "lo0"},
+                    "interface": "lo0",
                 },
             ],
         }
@@ -201,6 +201,15 @@ class TestRenderAdjacency:
     def test_empty_data(self):
         out = render_adjacency({})
         assert "No IS-IS adjacencies" in out
+
+    def test_alias_fn_translates_interface_names(self):
+        def kernel_to_nos(name: str) -> str:
+            mapping = {"ens34": "et1", "ens34.101": "et1.101"}
+            return mapping.get(name, name)
+
+        out = render_adjacency(ADJ_DATA, alias_fn=kernel_to_nos)
+        assert "et1" in out
+        assert "ens34" not in out
 
 
 # ── render_database ───────────────────────────────────────────────────────────

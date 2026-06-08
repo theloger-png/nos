@@ -227,7 +227,7 @@ def render_adjacency(
     adjacencies: list[tuple[str, dict]] = []  # (interface_name, adj_dict)
     for area in _get_areas(data):
         for c in area.get("circuits") or []:
-            ifc_name = (c.get("interface") or {}).get("name") or "?"
+            ifc_name = c.get("interface") or "?"
             for adj in c.get("adjacencies") or []:
                 if isinstance(adj, dict):
                     adjacencies.append((ifc_name, adj))
