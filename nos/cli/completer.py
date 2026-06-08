@@ -489,6 +489,7 @@ def _completions_at_node(
     prefix: str,
     store: Optional["ConfigStore"],
     path_so_far: list[str],
+    show_hints: bool = False,
 ) -> list[Completion]:
     """Return Completions for what can follow *node* given *prefix*."""
     results: list[Completion] = []
@@ -518,6 +519,11 @@ def _completions_at_node(
                         Completion(val, -len(prefix),
                                    display_meta=node.dynamic_child.help)
                     )
+        # Show hint when requested and no prefix/values available
+        elif show_hints and not prefix and not results:
+            results.append(
+                Completion(node.dynamic_hint, display_meta=node.help)
+            )
     return results
 
 
@@ -526,11 +532,13 @@ def complete_config_tokens(
     completing_new: bool,
     edit_path: list[str],
     store: Optional["ConfigStore"] = None,
+    show_hints: bool = False,
 ) -> list[Completion]:
     """Return completions for tokens typed after set / delete / edit.
 
     *edit_path* is the current hierarchy position (JunOS hyphen format).
     *completing_new* is True when the cursor follows a trailing space.
+    *show_hints* controls whether to show dynamic hints when no store/values available.
     """
     node = navigate_tree(CONFIG_TREE, edit_path)
     if node is None:
@@ -571,7 +579,7 @@ def complete_config_tokens(
         else:
             return []
 
-    return _completions_at_node(node, prefix, store, walked)
+    return _completions_at_node(node, prefix, store, walked, show_hints)
 
 
 # ============================================================================
@@ -898,8 +906,13 @@ class NOSCompleter(Completer):
             elif completing_new:
                 last_kw = arp_rest[-1].lower()
                 if last_kw == "interface":
-                    for iface in self._get_iface_names():
+                    iface_names = self._get_iface_names()
+                    for iface in iface_names:
                         yield Completion(iface, display_meta="Interface name")
+                    if not iface_names:
+                        yield Completion("<interface-name>", display_meta="Interface name")
+                elif last_kw == "hostname":
+                    yield Completion("<ip-address>", display_meta="IP address")
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
@@ -924,8 +937,11 @@ class NOSCompleter(Completer):
                             display_meta="Filter by interface name",
                         )
                 elif completing_new and nbr_rest[-1].lower() == "interface":
-                    for iface in self._get_iface_names():
+                    iface_names = self._get_iface_names()
+                    for iface in iface_names:
                         yield Completion(iface, display_meta="Interface name")
+                    if not iface_names:
+                        yield Completion("<interface-name>", display_meta="Interface name")
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
@@ -981,8 +997,13 @@ class NOSCompleter(Completer):
                     if not completing_new and len(tbl_rest) == 1:
                         pass  # still typing the keyword itself — handled above
                     elif completing_new and last_kw.lower() == "interface":
-                        for iface in self._get_iface_names():
+                        iface_names = self._get_iface_names()
+                        for iface in iface_names:
                             yield Completion(iface, display_meta="Interface name")
+                        if not iface_names:
+                            yield Completion("<interface-name>", display_meta="Interface name")
+                    elif completing_new and last_kw.lower() == "vlan":
+                        yield Completion("<vlan-name-or-id>", display_meta="VLAN name or ID")
             elif eth_rest[0].lower() in ("interface", "statistics"):
                 iface_rest = eth_rest[1:]
                 iface_prefix = "" if completing_new else (iface_rest[-1] if iface_rest else "")
@@ -1000,7 +1021,7 @@ class NOSCompleter(Completer):
         # "show configuration [<section-path>] [| <pipe-verb> ...]"
         if resolved_sub == "configuration":
             config_rest = rest[1:]
-            yield from complete_config_tokens(config_rest, completing_new, [], self.store)
+            yield from complete_config_tokens(config_rest, completing_new, [], self.store, show_hints=True)
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
@@ -1056,6 +1077,9 @@ class NOSCompleter(Completer):
                 for kw, meta in _ROUTE_SUBCMDS.items():
                     if kw.startswith(route_prefix):
                         yield Completion(kw, -len(route_prefix), display_meta=meta)
+                # Offer prefix hint when completing_new
+                if completing_new and not route_rest:
+                    yield Completion("<prefix>", display_meta="IP prefix to filter by")
             else:
                 # Inside 'show route <sub> ...'
                 last_kw = route_rest[-2].lower() if len(route_rest) >= 2 else ""
@@ -1072,7 +1096,8 @@ class NOSCompleter(Completer):
                     elif adj_rest[0].lower() == "bgp":
                         bgp_rest   = adj_rest[1:]
                         bgp_prefix = "" if completing_new else (bgp_rest[-1] if bgp_rest else "")
-                        pass  # bgp_rest positions: neighbor IP is free-form, no completions
+                        if completing_new and not bgp_rest:
+                            yield Completion("<neighbor-ip>", display_meta="BGP neighbor IP address")
                     if completing_new:
                         yield Completion("|", display_meta="Filter output")
                     return
@@ -1127,7 +1152,9 @@ class NOSCompleter(Completer):
                         if kw.startswith(sub_prefix):
                             yield Completion(kw, -len(sub_prefix), display_meta=meta)
             elif bgp_rest[0].lower() == "neighbor":
-                pass  # neighbor IP is free-form, no completions
+                neighbor_rest = bgp_rest[1:]
+                if completing_new and not neighbor_rest:
+                    yield Completion("<ip-address>", display_meta="BGP neighbor IP address")
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return
@@ -1200,7 +1227,7 @@ class NOSCompleter(Completer):
 
         # Config section path completions, relative to the current edit_path.
         yield from complete_config_tokens(
-            rest, completing_new, self.edit_path, self.store
+            rest, completing_new, self.edit_path, self.store, show_hints=True
         )
 
         if completing_new:

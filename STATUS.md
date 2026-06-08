@@ -21,6 +21,7 @@
 - Ctrl+X: clears input line (optimized: cancel_completion + reset without history append)
 - Interface aliasing: `set system interface-rename` maps physical interfaces to et0/et1 everywhere in nos-cli
 - lo0 loopback: dummy interface support, units lo0.0/lo0.1/etc, excluded from interface-rename
+- Autocompletion hints: dynamic hints for `<prefix>`, `<neighbor-ip>`, `<interface-name>`, `<vlan-name-or-id>`, `<ip-address>` in operational mode show commands and configure mode
 
 ### Show Commands
 - `show interfaces` — live data via pyroute2, IPv6 addresses displayed
@@ -122,4 +123,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1397 passing, 0 failing - 2026-06-04
+- Total: 1620 passing, 0 failing - 2026-06-08
