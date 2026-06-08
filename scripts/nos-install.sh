@@ -237,8 +237,10 @@ info "Installing sudoers rule for nft NAT table listing…"
 
 # Build the sudoers content
 read -r -d '' SUDOERS_NFT <<'SUDOERS_NFT_EOF' || true
-# Allow the nos service account to list nftables for NAT diagnostics.
-# This is needed by show security nat translations command.
+# Allow the nos service account to manage nftables for NAT.
+# These are needed by NatDriver in nos/drivers/kernel/nat.py.
+%nos ALL=(root) NOPASSWD: /usr/sbin/nft -f *
+%nos ALL=(root) NOPASSWD: /usr/sbin/nft delete table *
 nos ALL=(ALL) NOPASSWD: /usr/sbin/nft list table inet nos_nat
 SUDOERS_NFT_EOF
 
@@ -249,7 +251,9 @@ if [[ "$HUMAN_USER" == "root" ]]; then
 fi
 if [[ -n "$HUMAN_USER" ]]; then
     SUDOERS_NFT+="
-# Allow the human user to list nftables during development.
+# Allow the human user to manage nftables during development.
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/nft -f *
+$HUMAN_USER ALL=(root) NOPASSWD: /usr/sbin/nft delete table *
 $HUMAN_USER ALL=(ALL) NOPASSWD: /usr/sbin/nft list table inet nos_nat"
 fi
 

@@ -120,7 +120,7 @@ class NatDriver:
         log.debug("Applying nftables NAT ruleset:\n%s", ruleset)
         try:
             result = subprocess.run(
-                ["nft", "-f", "-"],
+                ["sudo", "nft", "-f", "-"],
                 input=ruleset,
                 text=True,
                 capture_output=True,
@@ -136,7 +136,7 @@ class NatDriver:
         """Remove the nos_nat table entirely (no-op if table does not exist)."""
         try:
             subprocess.run(
-                ["nft", "delete", "table", _NFT_FAMILY, _NFT_TABLE],
+                ["sudo", "nft", "delete", "table", _NFT_FAMILY, _NFT_TABLE],
                 capture_output=True,
             )
         except FileNotFoundError:
