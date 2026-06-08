@@ -32,6 +32,7 @@ apt-get install -y --no-install-recommends \
     libmnl-dev libcjson-dev libsystemd-dev \
     python3.12 python3.12-venv python3-pip \
     traceroute \
+    nftables \
     dnsmasq \
     isc-dhcp-client
 ok "System packages installed."
@@ -63,18 +64,30 @@ else
     warn "Group 'frr' not found — install frr first, then re-run this script."
 fi
 
-# Add human user to frr group if present
+# Add human user to frr, frrvty, and nos groups if present
 HUMAN_USER="${SUDO_USER:-}"
 if [[ "$HUMAN_USER" == "root" ]]; then
     HUMAN_USER=""
 fi
 if [[ -n "$HUMAN_USER" ]]; then
-    info "Adding '${HUMAN_USER}' to frr group for FRR runtime file access…"
+    info "Adding '${HUMAN_USER}' to frr, frrvty, and nos groups…"
     if getent group frr &>/dev/null; then
         usermod -aG frr "${HUMAN_USER}"
         ok "Added '${HUMAN_USER}' to frr group."
     else
         warn "Group 'frr' not found — install frr first, then re-run this script."
+    fi
+    if getent group frrvty &>/dev/null; then
+        usermod -aG frrvty "${HUMAN_USER}"
+        ok "Added '${HUMAN_USER}' to frrvty group."
+    else
+        warn "Group 'frrvty' not found — install frr first, then re-run this script."
+    fi
+    if getent group "${NOS_USER}" &>/dev/null; then
+        usermod -aG "${NOS_USER}" "${HUMAN_USER}"
+        ok "Added '${HUMAN_USER}' to ${NOS_USER} group."
+    else
+        warn "Group '${NOS_USER}' not found — create nos user first."
     fi
 fi
 
@@ -318,11 +331,14 @@ info "Installing NOS Python package into venv…"
 "${VENV}/bin/pip" install --quiet "${REPO_ROOT}"
 ok "Python package installed."
 
-# ── 6a. grant cap_net_admin to Python 3.12 ────────────────────────────────────
-info "Granting cap_net_admin to /usr/bin/python3.12…"
+# ── 6a. grant capabilities to Python 3.12 ────────────────────────────────────
+# cap_net_admin: manage interfaces / addresses (pyroute2)
+# cap_net_raw:   open raw/packet sockets (BFD, ARP probing)
+# cap_sys_admin: mount namespaces, bpf() syscall for XDP attach
+info "Granting capabilities to /usr/bin/python3.12…"
 if [[ -x /usr/bin/python3.12 ]]; then
-    setcap cap_net_admin+eip /usr/bin/python3.12
-    ok "cap_net_admin granted to /usr/bin/python3.12."
+    setcap cap_net_admin,cap_net_raw,cap_sys_admin+eip /usr/bin/python3.12
+    ok "Capabilities granted to /usr/bin/python3.12."
 else
     warn "/usr/bin/python3.12 not found — skipping setcap (nos-cli will need root to manage interfaces)."
 fi
