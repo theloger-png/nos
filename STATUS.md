@@ -103,7 +103,6 @@
 
 ## Known Limitations / TODO
 - Production mode: NOS full control of interfaces (disable netplan) — not yet
-- Pipe without space before | causes error: "show configuration interfaces irb| display set" fails
 - SNMP server: planned for future phase
 
 ## Phase 2 — Planned Features
@@ -123,4 +122,4 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1620 passing, 0 failing - 2026-06-08
+- Total: 1627 passing, 0 failing - 2026-06-08
