@@ -50,8 +50,75 @@ def _get_areas(data: dict) -> list[dict]:
 
 # ── 'show isis interface' ──────────────────────────────────────────────────────
 
-def render_interface(data: dict, filter_iface: str | None = None) -> str:
+def _is_passive_interface(ifc: dict, iface_name: str) -> bool:
+    """Detect if an interface is passive (loopback or explicitly configured as passive).
+
+    Loopback interfaces are always passive. FRR vtysh "show isis interface" marks
+    passive interfaces with "Passive" in the output.
+    """
+    if iface_name.startswith("lo"):
+        return True
+    return ifc.get("passive", False)
+
+
+def _get_level_code(ifc: dict, iface_name: str) -> int:
+    """Return numeric level code: 0=passive, 1=L1, 2=L2, 3=L1L2."""
+    if _is_passive_interface(ifc, iface_name):
+        return 0
+    level: str = ifc.get("level", "L1L2")
+    if level == "L1":
+        return 1
+    elif level == "L2":
+        return 2
+    elif level == "L1L2":
+        return 3
+    return 0
+
+
+def _get_dr_status(ifc: dict, level: int, iface_name: str) -> str:
+    """Return DR status string for a specific level.
+
+    Returns:
+      "Passive" for passive interfaces
+      "Point to Point" for p2p interfaces
+      "Disabled" if the level is disabled on this interface
+      "DIS elected-or-self" for broadcast LAN (elected DR or not)
+    """
+    if _is_passive_interface(ifc, iface_name):
+        return "Passive"
+
+    iface_type: str = ifc.get("type", "").lower()
+    if iface_type == "p2p":
+        return "Point to Point"
+
+    level_key = "level_1" if level == 1 else "level_2"
+    if ifc.get(f"{level_key}_disable"):
+        return "Disabled"
+
+    return "DIS"
+
+
+def _get_metric(ifc: dict, iface_name: str) -> tuple[int, int]:
+    """Return (level1_metric, level2_metric).
+
+    Passive interfaces (loopback) default to 0/0; others default to 10/10.
+    """
+    is_passive = _is_passive_interface(ifc, iface_name)
+    metric_l1 = ifc.get("metric_l1") or (0 if is_passive else 10)
+    metric_l2 = ifc.get("metric_l2") or (0 if is_passive else 10)
+    return metric_l1, metric_l2
+
+
+def render_interface(
+    data: dict,
+    filter_iface: str | None = None,
+    extensive: bool = False,
+    alias_fn: Optional[Callable[[str], str]] = None,
+) -> str:
     """Render IS-IS interface info from 'show isis interface json'.
+
+    JunOS format table with columns:
+      Interface, L (level code), CirID, Level 1 DR, Level 2 DR, L1/L2 Metric
 
     FRR 8.x structure:
       {"areas": [{"area": "default", "circuits": [
@@ -68,25 +135,72 @@ def render_interface(data: dict, filter_iface: str | None = None) -> str:
     if not circuits:
         return "IS-IS instance: default\n\nNo IS-IS interfaces configured.\n"
 
-    lines = ["IS-IS instance: default", ""]
-    hdr = f"{'Interface':<12}  {'CircID':<8}  {'State':<6}  {'Type':<8}  Level"
+    lines = ["IS-IS interface database:", ""]
+
+    if extensive:
+        for ifc in circuits:
+            name: str = ifc.get("name", "?")
+            if filter_iface and filter_iface != name:
+                continue
+            display_name = alias_fn(name) if alias_fn else name
+            lines.extend(_render_interface_extensive(ifc, display_name))
+        return "\n".join(lines) + "\n"
+
+    hdr = f"{'Interface':<15}  {'L':<3}  {'CirID':<6}  {'Level 1 DR':<16}  {'Level 2 DR':<16}  L1/L2 Metric"
     lines.append(hdr)
-    lines.append("-" * 50)
 
     for ifc in circuits:
         name: str = ifc.get("name", "?")
         if filter_iface and filter_iface != name:
             continue
-        cid: str = ifc.get("circuit-id", "?")
-        state: str = ifc.get("state", "?")
-        typ: str = ifc.get("type", "?")
-        level: str = ifc.get("level", "?")
-        lines.append(f"{name:<12}  {cid:<8}  {state:<6}  {typ:<8}  {level}")
+        display_name = alias_fn(name) if alias_fn else name
+        level_code = _get_level_code(ifc, name)
+        cid: str = ifc.get("circuit-id", "0x1")
+        if cid == "0x0":
+            cid = "0x1"
+        l1_dr = _get_dr_status(ifc, 1, name)
+        l2_dr = _get_dr_status(ifc, 2, name)
+        metric_l1, metric_l2 = _get_metric(ifc, name)
+        lines.append(
+            f"{display_name:<15}  {level_code:<3}  {cid:<6}  {l1_dr:<16}  {l2_dr:<16}  {metric_l1}/{metric_l2}"
+        )
 
     if len(lines) == 3:  # only header + separator, nothing matched filter
         lines.append(f"No IS-IS interface matching {filter_iface!r}.")
 
     return "\n".join(lines) + "\n"
+
+
+def _render_interface_extensive(ifc: dict, display_name: str) -> list[str]:
+    """Render detailed block for one interface."""
+    lines = [display_name]
+    index = ifc.get("ifindex", "?")
+    state = ifc.get("state", "?")
+    cid = ifc.get("circuit-id", "0x1")
+    if cid == "0x0":
+        cid = "0x1"
+    circuit_type = _get_level_code(ifc, display_name)
+
+    lines.append(f"  Index: {index}, State: 0x6, Circuit id: {cid}, Circuit type: {circuit_type}")
+
+    lsp_interval = ifc.get("lsp-interval", 100)
+    csnp_interval = ifc.get("csnp-interval", 10)
+    lines.append(f"  LSP interval: {lsp_interval} ms, CSNP interval: {csnp_interval} s")
+
+    metric_l1, metric_l2 = _get_metric(ifc, display_name)
+    priority = ifc.get("priority", 64)
+    hello_interval = ifc.get("hello-interval", 9.0)
+    hold_time = ifc.get("hold-time", 27)
+
+    for level in (1, 2):
+        adjacencies = ifc.get(f"level_{level}_adjacencies", 0)
+        metric = metric_l1 if level == 1 else metric_l2
+        level_str = f"Level {level} Adjacencies: {adjacencies}, Priority: {priority}, Metric: {metric}"
+        lines.append(f"  {level_str}")
+        lines.append(f"    Hello Interval: {hello_interval:.3f} s, Hold Time: {hold_time} s")
+
+    lines.append("")
+    return lines
 
 
 # ── 'show isis adjacency' ──────────────────────────────────────────────────────
@@ -242,7 +356,7 @@ def show_isis(
         data = _frr_fetch(frr, "show isis interface json")
         if not data:
             return _NOT_RUNNING
-        return render_interface(data)
+        return render_interface(data, alias_fn=alias_fn)
 
     sub_raw = args[0].lower()
     sub, err = resolve_prefix(sub_raw, _ISIS_SUBCMDS)
@@ -268,8 +382,9 @@ def show_isis(
         data = _frr_fetch(frr, "show isis interface json")
         if not data:
             return _NOT_RUNNING
-        filter_iface = rest[0] if rest else None
-        return render_interface(data, filter_iface=filter_iface)
+        extensive = bool(rest and resolve_prefix(rest[0].lower(), ["extensive"])[0] == "extensive")
+        filter_iface = rest[1] if len(rest) > 1 else rest[0] if rest and not extensive else None
+        return render_interface(data, filter_iface=filter_iface, extensive=extensive, alias_fn=alias_fn)
 
     if sub == "summary":
         data = _frr_fetch(frr, "show isis summary json")

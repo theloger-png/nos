@@ -145,9 +145,9 @@ class TestRenderInterface:
 
     def test_renders_state_and_type(self):
         out = render_interface(IFACE_DATA)
-        assert "Up" in out
-        assert "p2p" in out
-        assert "lan" in out
+        assert "Point to Point" in out
+        assert "Passive" in out
+        assert "L1/L2 Metric" in out
 
     def test_filter_by_name(self):
         out = render_interface(IFACE_DATA, filter_iface="ens34")
