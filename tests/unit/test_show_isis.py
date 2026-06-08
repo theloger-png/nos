@@ -268,13 +268,13 @@ class TestRenderDatabase:
     def test_renders_lsp_entries(self):
         out = render_database(DB_DATA)
         assert "nos-dev.00-00" in out
-        assert "0x00000002" in out
+        assert "0x2" in out  # Leading zeros stripped
         assert "0x68e8" in out
 
     def test_renders_both_levels(self):
         out = render_database(DB_DATA)
-        assert "Level-1" in out
-        assert "Level-2" in out
+        assert "level 1" in out  # Lowercase, space separated
+        assert "level 2" in out
 
     def test_detail_mode(self):
         out = render_database(DB_DATA, detail=True)

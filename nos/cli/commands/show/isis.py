@@ -267,6 +267,19 @@ def render_adjacency(
 
 # ── 'show isis database' ───────────────────────────────────────────────────────
 
+def _strip_hex_leading_zeros(hex_str: str) -> str:
+    """Strip leading zeros from a hex string like '0x00000003' to '0x3'."""
+    if not hex_str or hex_str == "?":
+        return hex_str
+    if hex_str.startswith("0x") or hex_str.startswith("0X"):
+        try:
+            hex_part = hex_str[2:]
+            return "0x" + format(int(hex_part, 16), "x")
+        except (ValueError, IndexError):
+            return hex_str
+    return hex_str
+
+
 def render_database(data: dict, detail: bool = False) -> str:
     """Render IS-IS link-state database from 'show isis database json'.
 
@@ -303,7 +316,7 @@ def render_database(data: dict, detail: bool = False) -> str:
         own: str = lsp.get("own", " ")
 
         if detail:
-            lines.append(f"IS-IS Level-{level_id} Link State Database:")
+            lines.append(f"IS-IS level {level_id} link-state database:")
             lines.append(f"  LSP ID:    {lsp_id}")
             lines.append(f"  Sequence:  {seq}")
             lines.append(f"  Checksum:  {chksum}")
@@ -312,15 +325,15 @@ def render_database(data: dict, detail: bool = False) -> str:
             lines.append(f"  Flags:     {own.strip()}")
             lines.append("")
         else:
-            level_header = f"IS-IS Level-{level_id} Link State Database:"
+            level_header = f"IS-IS level {level_id} link-state database:"
             if level_header not in lines:
                 lines.append(level_header)
-                hdr = f"  {'LSP ID':<26}  {'Seq':<12}  {'Checksum':<10}  {'Holdtime':<8}  A/P/OL"
+                hdr = f"  {'LSP ID':<26}  {'Sequence':<10}  {'Checksum':<10}  {'Lifetime':<10}  A/P/OL/AT"
                 lines.append(hdr)
-                lines.append("  " + "-" * 70)
-            own_marker = own if own.strip() else " "
+            seq_formatted = _strip_hex_leading_zeros(seq)
+            att_p_ol_at = f"{att_p_ol}/0"
             lines.append(
-                f"  {own_marker}{lsp_id:<25}  {seq:<12}  {chksum:<10}  {holdtime:<8}  {att_p_ol}"
+                f"  {lsp_id:<26}  {seq_formatted:<10}  {chksum:<10}  {holdtime:<10}  {att_p_ol_at}"
             )
 
     return "\n".join(lines) + "\n"
