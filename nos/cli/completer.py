@@ -639,6 +639,12 @@ def complete_config_tokens(
     *edit_path* is the current hierarchy position (JunOS hyphen format).
     *completing_new* is True when the cursor follows a trailing space.
     *show_hints* controls whether to show dynamic hints when no store/values available.
+
+    Multi-value handling (mirrors _parse_multi_value_set in configure.py):
+    - ``is_value`` child + following token → consume key+value, stay at current level
+    - ``is_presence`` child → consume flag, stay at current level
+    - Container child → navigate deeper
+    - Dynamic child → navigate into dynamic subtree
     """
     node = navigate_tree(CONFIG_TREE, edit_path)
     if node is None:
@@ -648,41 +654,64 @@ def complete_config_tokens(
     walk_tokens = tokens if completing_new else tokens[:-1]
 
     walked: list[str] = list(edit_path)
-    parent_node = None
-    for token in walk_tokens:
-        if node.is_value or node.is_presence:
-            # We've reached a value or presence node. After a value, show siblings at parent level.
-            return _completions_at_node(parent_node, prefix, store, walked, show_hints) if parent_node else []
-        parent_node = node
+    i = 0
+    while i < len(walk_tokens):
+        tok = walk_tokens[i]
+
         if node.children:
-            resolved, err = resolve_prefix(token, list(node.children.keys()))
+            resolved, err = resolve_prefix(tok, list(node.children.keys()))
             if resolved is not None:
+                child = node.children[resolved]
+                if child.is_value:
+                    if i + 1 < len(walk_tokens):
+                        # Consume key + value token, stay at current node level.
+                        i += 2
+                    else:
+                        # Key is the last walk token; enter value node for completions.
+                        walked.append(resolved)
+                        node = child
+                        i += 1
+                    continue
+                if child.is_presence:
+                    # Presence flag: stay at current node level.
+                    i += 1
+                    continue
+                # Container child: navigate deeper.
                 walked.append(resolved)
-                node = node.children[resolved]
-            elif node.dynamic_child is not None:
+                node = child
+                i += 1
+                continue
+            if err and "ambiguous" in err:
+                return []
+            # Token not in static children; fall through to dynamic child.
+            if node.dynamic_child is not None:
                 if node.expand_dotted_unit:
-                    m = _DOTTED_UNIT_RE.match(token)
+                    m = _DOTTED_UNIT_RE.match(tok)
                     if m:
                         walked.extend([m.group(1), "unit", m.group(2)])
                         node = _advance_past_unit(node.dynamic_child, m.group(2))
-                        parent_node = node
+                        i += 1
                         continue
-                walked.append(token)
+                walked.append(tok)
                 node = node.dynamic_child
-            else:
-                return []
-        elif node.dynamic_child is not None:
+                i += 1
+                continue
+            return []
+
+        if node.dynamic_child is not None:
             if node.expand_dotted_unit:
-                m = _DOTTED_UNIT_RE.match(token)
+                m = _DOTTED_UNIT_RE.match(tok)
                 if m:
                     walked.extend([m.group(1), "unit", m.group(2)])
                     node = _advance_past_unit(node.dynamic_child, m.group(2))
-                    parent_node = node
+                    i += 1
                     continue
-            walked.append(token)
+            walked.append(tok)
             node = node.dynamic_child
-        else:
-            return []
+            i += 1
+            continue
+
+        return []
 
     return _completions_at_node(node, prefix, store, walked, show_hints)
 

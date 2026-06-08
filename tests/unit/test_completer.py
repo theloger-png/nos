@@ -550,6 +550,51 @@ class TestDottedUnitCompletion:
         assert "vlan-id" in kws
 
 
+class TestMultiLevelSetCompletion:
+    """complete_config_tokens must navigate through value tokens to deeper sub-trees."""
+
+    def test_unit_after_plain_path_shows_unit_keywords(self):
+        # set interfaces et1 unit 101 <TAB> → unit-level: family, vlan-id
+        kws = complete("set interfaces et1 unit 101 ", CLIMode.CONFIGURE)
+        assert "family" in kws, f"family missing from {kws}"
+        assert "vlan-id" in kws, f"vlan-id missing from {kws}"
+        assert "mtu" not in kws, "interface-level keyword must not appear"
+        assert "unit" not in kws, "interface-level keyword must not appear"
+
+    def test_unit_after_value_token_shows_unit_keywords(self):
+        # mtu value consumed → navigation resumes at interface level → unit 101 → unit_inner
+        kws = complete("set interfaces et1 mtu 9000 unit 101 ", CLIMode.CONFIGURE)
+        assert "family" in kws, f"family missing from {kws}"
+        assert "vlan-id" in kws, f"vlan-id missing from {kws}"
+        assert "mtu" not in kws, "interface-level keyword must not appear at unit level"
+
+    def test_family_after_value_token_and_unit_shows_address_families(self):
+        # Value token skipped; unit sub-tree navigated; then family entered
+        kws = complete("set interfaces et1 mtu 9000 unit 101 family ", CLIMode.CONFIGURE)
+        assert "inet" in kws, f"inet missing from {kws}"
+        assert "inet6" in kws, f"inet6 missing from {kws}"
+        assert "ethernet-switching" in kws, f"ethernet-switching missing from {kws}"
+
+    def test_inet_level_after_full_chain(self):
+        # Full chain with value token skipped: …mtu 9000 unit 101 family inet <TAB>
+        kws = complete("set interfaces et1 mtu 9000 unit 101 family inet ", CLIMode.CONFIGURE)
+        assert "address" in kws, f"address missing from {kws}"
+
+    def test_partial_prefix_at_unit_level_after_value_token(self):
+        # Partial prefix "fam" at unit level after value consumption
+        kws = complete("set interfaces et1 mtu 9000 unit 101 fam", CLIMode.CONFIGURE)
+        assert "family" in kws, f"family missing from {kws}"
+        assert "vlan-id" not in kws
+
+    def test_multiple_value_tokens_skipped(self):
+        # Two value tokens (mtu + description) consumed, then unit 101 entered
+        kws = complete(
+            'set interfaces et1 mtu 9000 description "uplink" unit 101 ', CLIMode.CONFIGURE
+        )
+        assert "family" in kws, f"family missing from {kws}"
+        assert "vlan-id" in kws, f"vlan-id missing from {kws}"
+
+
 class TestNATStaticRuleCompletion:
     """Completions for security nat static rule configuration."""
 
