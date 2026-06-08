@@ -102,6 +102,22 @@ class ConfigApplier:
             except Exception as exc:
                 log.error("UserDriver failed: %s", exc)
 
+        old_services = (old or {}).get("services") or {}
+        new_services = (new or {}).get("services") or {}
+        old_ssh = old_services.get("ssh") or {}
+        new_ssh = new_services.get("ssh") or {}
+        if old_ssh != new_ssh:
+            from nos.drivers.kernel.ssh import SshDriver
+            try:
+                if new_ssh:
+                    SshDriver().apply(
+                        port=new_ssh.get("port", 22),
+                        protocol_version=new_ssh.get("protocol_version", "v2"),
+                        root_login=new_ssh.get("root_login", "deny"),
+                    )
+            except Exception as exc:
+                log.error("SshDriver failed: %s", exc)
+
         old_rename = (old or {}).get("interface_rename", False)
         new_rename = (new or {}).get("interface_rename", False)
         if old_rename == new_rename:

@@ -1103,11 +1103,44 @@ class OperationalMode:
             from nos.cli.commands.show.system import show_login
             return show_login(sys_cfg.get("login") or {})
 
+        if args and args[0] == "services":
+            if len(args) > 1 and args[1] == "ssh":
+                return self._show_system_services_ssh(sys_cfg)
+            return ""
+
         hostname = sys_cfg.get("host_name", sys_cfg.get("host-name", "(not set)"))
         domain = sys_cfg.get("domain_name", sys_cfg.get("domain-name", ""))
         lines = [f"Hostname:     {hostname}"]
         if domain:
             lines.append(f"Domain:       {domain}")
+        return "\n".join(lines)
+
+    def _show_system_services_ssh(self, sys_cfg: dict) -> str:
+        services = sys_cfg.get("services") or {}
+        ssh_cfg = services.get("ssh") or {}
+
+        port = ssh_cfg.get("port", 22)
+        protocol = ssh_cfg.get("protocol_version", "v2")
+        root_login = ssh_cfg.get("root_login", "deny")
+
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["systemctl", "is-active", "ssh"],
+                capture_output=True,
+                text=True,
+            )
+            status = "running" if result.returncode == 0 else "stopped"
+        except Exception:
+            status = "unknown"
+
+        lines = [
+            "SSH server configuration:",
+            f"  Port:              {port}",
+            f"  Protocol version:  {protocol}",
+            f"  Root login:        {root_login}",
+            f"  Status:            {status}",
+        ]
         return "\n".join(lines)
 
     def _show_forwarding(self) -> str:

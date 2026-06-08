@@ -112,6 +112,34 @@ class SyslogConfig(BaseModel):
     file: Dict[str, SyslogFile] = {}
 
 
+class SshConfig(BaseModel):
+    protocol_version: str = "v2"
+    port: int = 22
+    root_login: str = "deny"
+
+    @field_validator("protocol_version")
+    @classmethod
+    def validate_protocol_version(cls, v: str) -> str:
+        if v != "v2":
+            raise ValueError("Only protocol version 'v2' is supported")
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def validate_port(cls, v: int) -> int:
+        if not (1 <= v <= 65535):
+            raise ValueError("Port must be between 1 and 65535")
+        return v
+
+    @field_validator("root_login")
+    @classmethod
+    def validate_root_login(cls, v: str) -> str:
+        allowed = {"allow", "deny", "deny-password"}
+        if v not in allowed:
+            raise ValueError(f"root_login must be one of {allowed}")
+        return v
+
+
 class NtpConfig(BaseModel):
     server: List[str] = []
 
@@ -174,6 +202,7 @@ class DhcpLocalServerConfig(BaseModel):
 
 class ServicesConfig(BaseModel):
     dhcp_local_server: Optional[DhcpLocalServerConfig] = None
+    ssh: Optional[SshConfig] = None
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +217,7 @@ class SystemConfig(BaseModel):
     login: Optional[LoginConfig] = None
     syslog: Optional[SyslogConfig] = None
     interface_rename: bool = False
-    services: Optional[ServicesConfig] = None
+    services: ServicesConfig = ServicesConfig()
 
     @field_validator("name_server", mode="before")
     @classmethod

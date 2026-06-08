@@ -133,6 +133,11 @@ def build_config_tree() -> ConfigNode:
         "interface-rename": _p("Rename physical interfaces to et0, et1, …"),
         "services": _n("System services", {
             "dhcp-local-server": _dhcp_local_server_node,
+            "ssh": _n("SSH server configuration", {
+                "protocol-version": _e("SSH protocol version", ["v2"]),
+                "port": _v("SSH listening port", "<1-65535>"),
+                "root-login": _e("Root login policy", ["allow", "deny", "deny-password"]),
+            }),
         }),
     })
 
@@ -1323,7 +1328,7 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # "show system [login]"
+        # "show system [login|services]"
         if resolved_sub == "system":
             sys_rest = rest[1:]
             sys_prefix = "" if completing_new else (sys_rest[-1] if sys_rest else "")
@@ -1332,6 +1337,18 @@ class NOSCompleter(Completer):
                     yield Completion(
                         "login", -len(sys_prefix), display_meta="Show login users"
                     )
+                if "services".startswith(sys_prefix):
+                    yield Completion(
+                        "services", -len(sys_prefix), display_meta="Show system services"
+                    )
+            elif len(sys_rest) >= 2 and sys_rest[0] == "services":
+                # "show system services [ssh]"
+                svc_prefix = "" if completing_new else (sys_rest[-1] if sys_rest else "")
+                if not sys_rest[1:] or (len(sys_rest) == 2 and not completing_new):
+                    if "ssh".startswith(svc_prefix):
+                        yield Completion(
+                            "ssh", -len(svc_prefix), display_meta="Show SSH configuration"
+                        )
             if completing_new:
                 yield Completion("|", display_meta="Filter output")
             return

@@ -321,6 +321,42 @@ else
     die "Sudoers file validation failed for /etc/sudoers.d/nos-users"
 fi
 
+# ── 2k. sudoers rule — SSH configuration management ────────────────────────────
+info "Installing sudoers rule for SSH configuration management…"
+
+read -r -d '' SUDOERS_SSH <<'SUDOERS_SSH_EOF' || true
+# Allow the nos service account to manage SSH server configuration.
+# These are needed by SshDriver in nos/drivers/kernel/ssh.py.
+nos ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/ssh/sshd_config.d/nos.conf
+nos ALL=(ALL) NOPASSWD: /bin/systemctl reload ssh
+nos ALL=(ALL) NOPASSWD: /bin/systemctl reload sshd
+SUDOERS_SSH_EOF
+
+# Add human user if present
+HUMAN_USER="${SUDO_USER:-}"
+if [[ "$HUMAN_USER" == "root" ]]; then
+    HUMAN_USER=""
+fi
+if [[ -n "$HUMAN_USER" ]]; then
+    SUDOERS_SSH+="
+# Allow the human user to manage SSH during development.
+$HUMAN_USER ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/ssh/sshd_config.d/nos.conf
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload ssh
+$HUMAN_USER ALL=(ALL) NOPASSWD: /bin/systemctl reload sshd"
+fi
+
+echo "$SUDOERS_SSH" > /etc/sudoers.d/nos-ssh
+chmod 0440 /etc/sudoers.d/nos-ssh
+
+if visudo -c -f /etc/sudoers.d/nos-ssh 2>/dev/null; then
+    ok "Sudoers rule installed and validated at /etc/sudoers.d/nos-ssh."
+    if [[ -n "$HUMAN_USER" ]]; then
+        ok "  Added SSH sudoers rules for user '$HUMAN_USER'."
+    fi
+else
+    die "Sudoers file validation failed for /etc/sudoers.d/nos-ssh"
+fi
+
 # ── 3. directories ─────────────────────────────────────────────────────────────
 info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
