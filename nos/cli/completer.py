@@ -694,6 +694,17 @@ _BGP_SUMMARY_SUBCMDS: dict[str, str] = {
     "detail": "Show detailed BGP summary per neighbor",
 }
 
+_ISIS_SUBCMDS: dict[str, str] = {
+    "adjacency": "Show IS-IS adjacencies",
+    "database":  "Show IS-IS link-state database",
+    "interface": "Show IS-IS interface information",
+    "summary":   "Show IS-IS summary",
+}
+
+_ISIS_DATABASE_SUBCMDS: dict[str, str] = {
+    "detail": "Show detailed LSP information",
+}
+
 _IFACE_SUB_CMDS = {
     "terse": "One-line interface status",
     "description": "Interface descriptions",
@@ -1159,7 +1170,32 @@ class NOSCompleter(Completer):
                 yield Completion("|", display_meta="Filter output")
             return
 
-        # All other show sub-commands (isis, vlans, system, forwarding)
+        # "show isis [adjacency [<id>] | database [detail] | interface [<name>] | summary]"
+        if resolved_sub == "isis":
+            isis_rest = rest[1:]
+            isis_prefix = "" if completing_new else (isis_rest[-1] if isis_rest else "")
+
+            if not isis_rest or (len(isis_rest) == 1 and not completing_new):
+                for kw, meta in _ISIS_SUBCMDS.items():
+                    if kw.startswith(isis_prefix):
+                        yield Completion(kw, -len(isis_prefix), display_meta=meta)
+            elif isis_rest[0].lower() == "database":
+                db_rest = isis_rest[1:]
+                db_prefix = "" if completing_new else (db_rest[-1] if db_rest else "")
+                if not db_rest or (len(db_rest) == 1 and not completing_new):
+                    for kw, meta in _ISIS_DATABASE_SUBCMDS.items():
+                        if kw.startswith(db_prefix):
+                            yield Completion(kw, -len(db_prefix), display_meta=meta)
+            elif isis_rest[0].lower() in ("adjacency", "interface"):
+                sub_rest = isis_rest[1:]
+                if completing_new and not sub_rest:
+                    hint = "<system-id>" if isis_rest[0].lower() == "adjacency" else "<interface-name>"
+                    yield Completion(hint, display_meta="Optional filter")
+            if completing_new:
+                yield Completion("|", display_meta="Filter output")
+            return
+
+        # All other show sub-commands (vlans, system, forwarding)
         if completing_new:
             yield Completion("|", display_meta="Filter output")
 

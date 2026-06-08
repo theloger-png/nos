@@ -39,7 +39,7 @@
 - `show route` - JunOS format, IPv4/IPv6, brief/detail/terse/hidden, protocol filter, prefix filter
 - `show bgp summary` - JunOS format with peer states and prefix counts
 - `show bgp neighbor [<ip>]` - detailed neighbor information
-- `show isis` (stub)
+- `show isis` — adjacency, database [detail], interface [name], summary (FRR isisd via vtysh JSON)
 
 ### Backend Drivers
 - Kernel: interfaces, bridge, routes, VRF (pyroute2, never iproute2 CLI directly)
@@ -122,8 +122,8 @@
 - commit/rollback stateful JunOS-style (50 checkpoints)
 
 ## Test Count
-- Total: 1627 passing, 0 failing - 2026-06-08
+- Total: 1658 passing, 0 failing - 2026-06-08
 
 ## Recent Changes (2026-06-08)
 - Fixed: pipe character now works without spaces (`show config irb| display set`)
-- Added: 3 new parser tests for pipe flexibility
+- Implemented: `show isis` — adjacency, database [detail], interface [name], summary via FRR isisd JSON
