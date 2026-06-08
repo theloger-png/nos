@@ -9,10 +9,44 @@ from nos.drivers.frr.isis import ISISGenerator
 
 
 def _has_ip_addresses(iface: Dict[str, Any]) -> bool:
-    inet = (iface.get("family_inet") or {}).get("address") or {}
-    inet6 = (iface.get("family_inet6") or {}).get("address") or {}
-    iso_addr = (iface.get("family_iso") or {}).get("address")
-    return bool(inet or inet6 or iso_addr)
+    """Return True if the interface has any routable address at top-level or in any unit."""
+    if (iface.get("family_inet") or {}).get("address"):
+        return True
+    if (iface.get("family_inet6") or {}).get("address"):
+        return True
+    if (iface.get("family_iso") or {}).get("address"):
+        return True
+    for unit_cfg in (iface.get("unit") or {}).values():
+        if not isinstance(unit_cfg, dict):
+            continue
+        if (unit_cfg.get("family_inet") or {}).get("address"):
+            return True
+        if (unit_cfg.get("family_inet6") or {}).get("address"):
+            return True
+        if unit_cfg.get("family_iso"):
+            return True
+    return False
+
+
+def _extract_net_address(interfaces_cfg: Dict[str, Any]) -> Optional[str]:
+    """Find the IS-IS NET address from any interface's family iso config.
+
+    Checks top-level family_iso first, then unit-level (any unit).
+    Returns the first NET address found, or None.
+    """
+    for iface_data in interfaces_cfg.values():
+        if not isinstance(iface_data, dict):
+            continue
+        net = (iface_data.get("family_iso") or {}).get("address")
+        if net:
+            return net
+        for unit_cfg in (iface_data.get("unit") or {}).values():
+            if not isinstance(unit_cfg, dict):
+                continue
+            net = (unit_cfg.get("family_iso") or {}).get("address")
+            if net:
+                return net
+    return None
 
 
 class FRRRenderer:
@@ -43,13 +77,21 @@ class FRRRenderer:
         isis_cfg = protocols.get("isis")
         bgp_cfg = protocols.get("bgp")
 
-        # Derive router_id from lo0's first IPv4 address when not explicit.
+        # Derive router_id from lo0's IPv4 address (top-level or unit 0).
         if not router_id:
             lo0_cfg = interfaces_cfg.get("lo0") or {}
             lo0_addrs = (lo0_cfg.get("family_inet") or {}).get("address") or {}
+            if not lo0_addrs:
+                lo0_addrs = (
+                    ((lo0_cfg.get("unit") or {}).get("0") or {})
+                    .get("family_inet") or {}
+                ).get("address") or {}
             if lo0_addrs:
                 first_addr = next(iter(lo0_addrs))
                 router_id = str(ipaddress.ip_interface(first_addr).ip)
+
+        # NET address: explicit family iso address takes priority over router_id derivation.
+        net_address: Optional[str] = _extract_net_address(interfaces_cfg)
 
         # FRR header.
         lines += [
@@ -85,7 +127,9 @@ class FRRRenderer:
 
         # IS-IS router block.
         if isis_cfg:
-            lines += self._isis.render_router(isis_cfg, router_id=router_id)
+            lines += self._isis.render_router(
+                isis_cfg, router_id=router_id, net_address=net_address
+            )
 
         # Route-map stanzas (must precede the BGP block so references resolve).
         policy_options = config.get("policy_options") or {}
@@ -164,14 +208,22 @@ class FRRRenderer:
     ) -> list[str]:
         lines = [f"interface {iface_name}"]
 
+        # Top-level addresses (routed port style: family inet address x.x.x.x/y)
         for addr in (iface_data.get("family_inet") or {}).get("address") or {}:
             lines.append(f" ip address {addr}")
         for addr in (iface_data.get("family_inet6") or {}).get("address") or {}:
             lines.append(f" ipv6 address {addr}")
-        iso_addr = (iface_data.get("family_iso") or {}).get("address")
-        if iso_addr:
-            lines.append(f" iso enable")
-            lines.append(f" iso address {iso_addr}")
+
+        # Unit 0 addresses (JunOS unit style: unit 0 family inet address x.x.x.x/y)
+        unit0 = (iface_data.get("unit") or {}).get("0") or {}
+        for addr in (unit0.get("family_inet") or {}).get("address") or {}:
+            lines.append(f" ip address {addr}")
+        for addr in (unit0.get("family_inet6") or {}).get("address") or {}:
+            lines.append(f" ipv6 address {addr}")
+
+        # family iso: presence on interface means IS-IS is active here.
+        # The NET address goes into the router isis block, not here.
+        # No FRR interface command needed for ISO itself.
 
         if isis_iface_cfg is not None:
             lines += self._isis.render_interface_body(iface_name, isis_iface_cfg)

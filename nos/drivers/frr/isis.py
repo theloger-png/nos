@@ -62,18 +62,17 @@ class ISISGenerator:
         self,
         isis_cfg: Dict[str, Any],
         router_id: Optional[str] = None,
+        net_address: Optional[str] = None,
     ) -> List[str]:
         """Return the ``router isis default`` stanza.
 
-        ``isis_cfg`` corresponds to a serialised :class:`IsisConfig`.
-        ``router_id`` is taken from ``routing-options.router-id`` and used
-        to derive the IS-IS NET when no explicit NET is configured.
+        ``net_address`` is the explicit NSAP/NET from ``family iso address``
+        on a loopback interface and takes priority.  Falls back to deriving
+        a NET from ``router_id`` when no explicit address is configured.
         """
         lines = ["router isis default"]
 
-        net = None
-        if router_id:
-            net = _router_id_to_net(router_id)
+        net = net_address or (router_id and _router_id_to_net(router_id))
         if net:
             lines.append(f" net {net}")
 

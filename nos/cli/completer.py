@@ -216,6 +216,7 @@ def build_config_tree() -> ConfigNode:
     # ── protocols ──────────────────────────────────────────────────────────
     isis_iface_inner = _n("IS-IS interface configuration", {
         "point-to-point": _p("Point-to-point link"),
+        "passive":        _p("Passive interface (advertise prefix, no adjacency)"),
         "hello-interval": _v("Hello interval", "<seconds>"),
         "hold-time": _v("Hold time", "<seconds>"),
         "level": _n("Level configuration", {

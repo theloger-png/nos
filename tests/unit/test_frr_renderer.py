@@ -166,17 +166,55 @@ def test_render_full_router_config(renderer):
 # ---------------------------------------------------------------------------
 
 def test_render_family_iso_loopback(renderer):
+    """NET from family iso address goes into router isis block, not interface stanza."""
     config = {
         "interfaces": {
             "lo0": {
                 "family_iso": {"address": "49.0001.0000.0101.0101.00"},
             }
-        }
+        },
+        "protocols": {"isis": {"interface": {"lo0.0": {}}}},
     }
     out = renderer.render(config)
     assert "interface lo0" in out
-    assert "iso enable" in out
-    assert "iso address 49.0001.0000.0101.0101.00" in out
+    assert "net 49.0001.0000.0101.0101.00" in out
+    assert "router isis default" in out
+    # iso address must NOT appear in interface stanza — it belongs in router isis
+    assert "iso address" not in out
+    assert "iso enable" not in out
+
+
+def test_render_family_iso_from_unit(renderer):
+    """NET address in unit 0 family iso is picked up for router isis block."""
+    config = {
+        "interfaces": {
+            "lo0": {
+                "unit": {
+                    "0": {
+                        "family_inet": {"address": {"1.1.1.1/32": {}}},
+                        "family_iso": {"address": "49.0001.0000.0101.0101.00"},
+                    }
+                }
+            },
+            "et1": {"unit": {"0": {"family_iso": True}}},
+        },
+        "protocols": {
+            "isis": {
+                "interface": {
+                    "et1.0": {"point_to_point": True},
+                    "lo0.0": {"passive": True},
+                }
+            }
+        },
+    }
+    out = renderer.render(config)
+    assert "net 49.0001.0000.0101.0101.00" in out
+    assert "ip address 1.1.1.1/32" in out
+    assert "interface et1" in out
+    assert "isis network point-to-point" in out
+    assert "interface lo0" in out
+    assert "isis passive" in out
+    assert "iso address" not in out
 
 
 def test_render_family_iso_included_in_isis_stanza(renderer):
@@ -192,13 +230,13 @@ def test_render_family_iso_included_in_isis_stanza(renderer):
             "isis": {
                 "interface": {
                     "eth0": {"point_to_point": True},
-                    "lo0": {},
+                    "lo0.0": {},
                 }
             }
         },
     }
     out = renderer.render(config)
-    assert "iso address 49.0001.0000.0101.0101.00" in out
+    assert "net 49.0001.0000.0101.0101.00" in out
     assert "ip address 1.1.1.1/32" in out
     assert "router isis default" in out
 
@@ -244,7 +282,7 @@ def test_render_isis_interface_unit_notation(renderer):
 
 
 def test_render_isis_multi_area_zone_with_unit_iface(renderer):
-    """Multi-area zone + unit-notation interfaces render correctly."""
+    """Multi-area zone NET goes to router isis block; unit-notation interfaces render correctly."""
     config = {
         "routing_options": {"router_id": "2.2.2.2"},
         "interfaces": {
@@ -266,4 +304,5 @@ def test_render_isis_multi_area_zone_with_unit_iface(renderer):
     out = renderer.render(config)
     assert "interface et0" in out
     assert "interface lo0" in out
-    assert "iso address 49.0001.0002.0000.0202.0202.00" in out
+    assert "net 49.0001.0002.0000.0202.0202.00" in out
+    assert "iso address" not in out
