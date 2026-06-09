@@ -1,0 +1,2 @@
+- [ ] frr-reload.py fails with rc=1 when protocols section is empty (all protocols deleted) - frr.conf has old config, NOS generates empty config, frr-reload.py cannot diff correctly
+- [ ] SONiC integration: nos-cli as management plane for SONiC whitebox switches - new nos/drivers/sonic/ driver that writes to Redis CONFIG_DB instead of kernel/FRR

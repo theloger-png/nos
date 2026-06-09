@@ -1,0 +1,29 @@
+[Unit]
+Description=NOS REST API
+Documentation=https://github.com/nos-dev/nos
+After=network.target nos-apply.service
+Wants=nos-apply.service
+
+[Service]
+Type=simple
+ExecStart=/opt/nos/venv/bin/python -m nos.api.app
+User=nos
+Group=nos
+Restart=on-failure
+RestartSec=3s
+
+# Bind only on loopback by default; override NOS_API_HOST/NOS_API_PORT to change
+Environment=NOS_API_HOST=127.0.0.1
+Environment=NOS_API_PORT=8080
+Environment=NOS_BASE_DIR=/opt/nos
+Environment=NOS_API_KEY_PATH=/opt/nos/api_key
+
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=nos-api
+
+[Install]
+WantedBy=multi-user.target
