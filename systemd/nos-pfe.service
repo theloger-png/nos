@@ -6,7 +6,7 @@ After=network.target
 [Service]
 Type=notify
 ExecStart=/usr/local/sbin/nos-pfe --xdp-obj /usr/lib/nos/xdp_prog.o
-ExecStartPost=/bin/bash -c 'sleep 0.5 && chown root:nos /run/nos && chmod 775 /run/nos && chown root:nos /run/nos/pfe.sock && chmod 660 /run/nos/pfe.sock && touch /run/nos/stats.json && chmod 664 /run/nos/stats.json && chown root:nos /run/nos/stats.json'
+ExecStartPost=/bin/bash -c 'sleep 0.5 && chown root:nos /run/nos && chmod 775 /run/nos && chown root:nos /run/nos/pfe.sock && chmod 660 /run/nos/pfe.sock && touch /run/nos/stats.json && chmod 664 /run/nos/stats.json && chown root:nos /run/nos/stats.json && touch /run/nos/stats.json.tmp && chmod 664 /run/nos/stats.json.tmp && chown root:nos /run/nos/stats.json.tmp'
 Restart=on-failure
 RestartSec=5s
 
