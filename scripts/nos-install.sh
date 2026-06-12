@@ -28,7 +28,7 @@ apt-get install -y --no-install-recommends \
     frr frr-pythontools \
     iproute2 bridge-utils \
     "linux-headers-$(uname -r)" \
-    clang llvm libbpf-dev linux-tools-common \
+    clang llvm libbpf-dev linux-tools-common "linux-tools-$(uname -r)" \
     libmnl-dev libcjson-dev libsystemd-dev \
     python3.12 python3.12-venv python3-pip \
     traceroute \
@@ -372,7 +372,7 @@ info "Creating runtime directories…"
 install -d -m 0755 -o root    -g root         /opt/nos
 chown root:"${NOS_USER}" /opt/nos
 chmod 775 /opt/nos
-install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
+install -d -m 0775 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
 install -d -m 0770 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"
 install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_STATEDIR}"
