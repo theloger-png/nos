@@ -9,10 +9,16 @@
  * On restart, existing pinned maps are reused automatically; route state
  * survives as long as fib.c does not unpin them.
  *
- * Attach strategy per interface:
- *   1. bpf_program__attach_xdp() — link-based native (DRV) mode.
- *   2. bpf_xdp_attach(XDP_FLAGS_SKB_MODE) — generic mode fallback.
- * When the caller passes XDP_FLAGS_SKB_MODE, step 1 is skipped.
+ * Attach strategy per interface (three tiers):
+ *   1. bpf_program__attach_xdp()             — BPF_LINK_CREATE, link-based native.
+ *      The kernel manages lifetime; the program is auto-detached when the link fd
+ *      is closed.  Preferred because it is the cleanest ownership model.
+ *   2. bpf_xdp_attach(XDP_FLAGS_DRV_MODE)   — legacy netlink native (same path as
+ *      "ip link set ... xdpdrv").  Used when tier 1 fails; works on i40e and other
+ *      drivers that support XDP in driver mode but not the newer link-based API.
+ *   3. bpf_xdp_attach(XDP_FLAGS_SKB_MODE)   — generic / software XDP.  Last resort;
+ *      always works but runs in the kernel's skb fast-path, not the driver.
+ * Tiers 1 and 2 are skipped when the caller passes XDP_FLAGS_SKB_MODE.
  */
 
 #include <errno.h>
@@ -125,12 +131,9 @@ static void iface_remove_idx(int idx)
 /* ── attach / detach helpers ────────────────────────────────────────────── */
 
 /*
- * Attach the loaded XDP program to one interface.
- *
- * If flags does not include XDP_FLAGS_SKB_MODE, tries native mode first via
- * bpf_program__attach_xdp() (link-based, no-flags-needed).  Falls back to
- * generic/SKB mode on failure.  Caller can force generic by passing
- * XDP_FLAGS_SKB_MODE.
+ * Attach the loaded XDP program to one interface using the three-tier strategy
+ * described in the file header.  Caller can force generic-only by passing
+ * XDP_FLAGS_SKB_MODE (skips tiers 1 and 2).
  */
 static int xdp_attach_iface(int ifindex, unsigned int flags)
 {
@@ -149,32 +152,63 @@ static int xdp_attach_iface(int ifindex, unsigned int flags)
         return -1;
     }
 
-    /* ── try native (driver) XDP ── */
+    int alloc_idx = g_nifaces - 1;   /* saved so we can undo on total failure */
+    int prog_fd   = bpf_program__fd(g_prog);
+    int rc;
+
     if (!(flags & XDP_FLAGS_SKB_MODE)) {
+        /* ── tier 1: link-based native XDP (BPF_LINK_CREATE) ── */
+        xdp_info("%s (ifindex %d): trying tier-1 native XDP (BPF_LINK_CREATE)",
+                 name, ifindex);
         struct bpf_link *link = bpf_program__attach_xdp(g_prog, ifindex);
         if (link) {
-            xdp_info("attached to %s (ifindex %d) — native mode", name, ifindex);
+            xdp_info("%s (ifindex %d): attached — native mode (link-based)",
+                     name, ifindex);
             e->link = link;
             e->mode = XDP_FLAGS_DRV_MODE;
             return 0;
         }
-        long err = libbpf_get_error(link);
-        xdp_warn("%s (ifindex %d): native XDP unavailable (%s), retrying in generic mode",
-                 name, ifindex, strerror(-err));
+        long lerr = libbpf_get_error(link);
+        xdp_warn("%s (ifindex %d): tier-1 BPF_LINK_CREATE failed (%s); "
+                 "trying tier-2 legacy DRV_MODE",
+                 name, ifindex, strerror((int)-lerr));
+
+        /* ── tier 2: legacy netlink-based native XDP (XDP_FLAGS_DRV_MODE) ──
+         *
+         * This is the path used by "ip link set ... xdpdrv".  It goes through
+         * RTM_NEWLINK / IFLA_XDP rather than BPF_LINK_CREATE, which avoids
+         * any kernel-side restrictions specific to the link-based API.
+         * i40e (Intel X710) and similar drivers that support native XDP but
+         * return EOPNOTSUPP from BPF_LINK_CREATE land here.
+         */
+        xdp_info("%s (ifindex %d): trying tier-2 native XDP (bpf_xdp_attach DRV_MODE)",
+                 name, ifindex);
+        rc = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS_DRV_MODE, NULL);
+        if (rc == 0) {
+            xdp_info("%s (ifindex %d): attached — native mode (legacy DRV_MODE)",
+                     name, ifindex);
+            e->link = NULL;
+            e->mode = XDP_FLAGS_DRV_MODE;
+            return 0;
+        }
+        xdp_warn("%s (ifindex %d): tier-2 DRV_MODE failed (%s); "
+                 "falling back to tier-3 generic",
+                 name, ifindex, strerror(-rc));
     }
 
-    /* ── generic (SKB / software) XDP ── */
-    int prog_fd = bpf_program__fd(g_prog);
-    int rc = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS_SKB_MODE, NULL);
+    /* ── tier 3: generic (SKB / software) XDP ── */
+    xdp_info("%s (ifindex %d): trying tier-3 generic XDP (bpf_xdp_attach SKB_MODE)",
+             name, ifindex);
+    rc = bpf_xdp_attach(ifindex, prog_fd, XDP_FLAGS_SKB_MODE, NULL);
     if (rc < 0) {
-        xdp_err("failed to attach to %s (ifindex %d) in generic mode: %s",
+        xdp_err("%s (ifindex %d): all XDP attach tiers failed; last error: %s",
                 name, ifindex, strerror(-rc));
-        iface_remove_idx(g_nifaces - 1);   /* undo the iface_alloc above */
+        iface_remove_idx(alloc_idx);
         errno = -rc;
         return -1;
     }
 
-    xdp_info("attached to %s (ifindex %d) — generic mode", name, ifindex);
+    xdp_info("%s (ifindex %d): attached — generic mode (SKB_MODE)", name, ifindex);
     e->link = NULL;
     e->mode = XDP_FLAGS_SKB_MODE;
     return 0;
@@ -196,7 +230,7 @@ static void detach_entry(struct iface_entry *e)
                      e->ifindex, name, strerror(errno));
         e->link = NULL;
     } else {
-        /* fd-based attachment (generic mode). */
+        /* Legacy fd-based attachment (DRV_MODE tier-2 or SKB_MODE tier-3). */
         int rc = bpf_xdp_detach(e->ifindex, e->mode, NULL);
         if (rc < 0)
             xdp_warn("bpf_xdp_detach ifindex %d (%s): %s",
