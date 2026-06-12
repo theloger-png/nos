@@ -442,13 +442,20 @@ info "Initializing default config files in ${NOS_CONFDIR}…"
 
 # Initialize running.json and candidate.json with empty config objects
 for config_file in running.json candidate.json; do
+    src="${REPO_ROOT}/config/${config_file}"
     dst="${NOS_CONFDIR}/${config_file}"
     if [[ -e "${dst}" ]]; then
         warn "  ${dst} already exists — skipping."
     else
-        echo "{}" > "${dst}"
-        install -m 0640 -o root -g "${NOS_USER}" "${dst}" "${dst}"
-        ok "  Initialized ${dst} with empty config."
+        src=$(realpath "$src")
+        dst=$(realpath "$dst" 2>/dev/null || echo "$dst")
+        if [ "$src" != "$dst" ]; then
+            install -m 0640 -o root -g "${NOS_USER}" "$src" "$dst"
+            ok "  Initialized ${dst} from repo config."
+        else
+            echo "{}" > "$dst"
+            ok "  Created ${dst} with empty config."
+        fi
     fi
 done
 
@@ -462,8 +469,12 @@ for src in "${REPO_ROOT}"/config/*.json; do
     if [[ -e "${dst}" ]]; then
         warn "  ${dst} already exists — skipping."
     else
-        install -m 0640 -o root -g "${NOS_USER}" "${src}" "${dst}"
-        ok "  Installed ${dst}."
+        src_real=$(realpath "$src")
+        dst_real=$(realpath "$dst" 2>/dev/null || echo "$dst")
+        if [ "$src_real" != "$dst_real" ]; then
+            install -m 0640 -o root -g "${NOS_USER}" "$src_real" "$dst_real"
+            ok "  Installed ${dst}."
+        fi
     fi
 done
 
