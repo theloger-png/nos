@@ -28,6 +28,7 @@ apt-get install -y --no-install-recommends \
     frr frr-pythontools \
     iproute2 bridge-utils \
     "linux-headers-$(uname -r)" \
+    build-essential \
     clang llvm libbpf-dev linux-tools-common "linux-tools-$(uname -r)" \
     libmnl-dev libcjson-dev libsystemd-dev \
     python3.12 python3.12-venv python3-pip \
