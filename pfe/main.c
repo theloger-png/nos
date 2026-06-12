@@ -581,7 +581,7 @@ static void do_reload(const char *xdp_obj)
         log_err("reload: xdp_loader_init failed — XDP offline until next reload");
         return;
     }
-    if (xdp_loader_attach_all(XDP_FLAGS_SKB_MODE) < 0)
+    if (xdp_loader_attach_all(0) < 0)
         log_warn("reload: one or more interfaces failed XDP attach");
 
     log_info("reload complete");
@@ -649,7 +649,7 @@ int main(int argc, char *argv[])
     if (xdp_loader_init(xdp_obj) < 0) {
         log_warn("xdp_loader_init failed — XDP unavailable, kernel forwarding active");
     } else {
-        if (xdp_loader_attach_all(XDP_FLAGS_SKB_MODE) < 0)
+        if (xdp_loader_attach_all(0) < 0)
             log_warn("one or more interfaces failed XDP attach");
         xdp_up = 1;
     }
