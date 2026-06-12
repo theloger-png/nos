@@ -438,9 +438,27 @@ chmod 0755 /usr/local/bin/nos-cli
 ok "CLI entry point installed at /usr/local/bin/nos-cli."
 
 # ── 8. config defaults ────────────────────────────────────────────────────────
-info "Copying default config files to ${NOS_CONFDIR}…"
+info "Initializing default config files in ${NOS_CONFDIR}…"
+
+# Initialize running.json and candidate.json with empty config objects
+for config_file in running.json candidate.json; do
+    dst="${NOS_CONFDIR}/${config_file}"
+    if [[ -e "${dst}" ]]; then
+        warn "  ${dst} already exists — skipping."
+    else
+        echo "{}" > "${dst}"
+        install -m 0640 -o root -g "${NOS_USER}" "${dst}" "${dst}"
+        ok "  Initialized ${dst} with empty config."
+    fi
+done
+
+# Copy other config files from repo
 for src in "${REPO_ROOT}"/config/*.json; do
     dst="${NOS_CONFDIR}/$(basename "${src}")"
+    # Skip running.json and candidate.json (already initialized above)
+    if [[ "$(basename "${src}")" == "running.json" ]] || [[ "$(basename "${src}")" == "candidate.json" ]]; then
+        continue
+    fi
     if [[ -e "${dst}" ]]; then
         warn "  ${dst} already exists — skipping."
     else
