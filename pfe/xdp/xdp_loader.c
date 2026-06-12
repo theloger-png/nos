@@ -158,9 +158,9 @@ static int xdp_attach_iface(int ifindex, unsigned int flags)
             e->mode = XDP_FLAGS_DRV_MODE;
             return 0;
         }
-        xdp_warn("%s (ifindex %d): native XDP unavailable (%s), "
-                 "retrying in generic mode",
-                 name, ifindex, strerror(errno));
+        long err = libbpf_get_error(link);
+        xdp_warn("%s (ifindex %d): native XDP unavailable (%s), retrying in generic mode",
+                 name, ifindex, strerror(-err));
     }
 
     /* ── generic (SKB / software) XDP ── */
