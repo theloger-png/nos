@@ -86,6 +86,7 @@ int nos_xdp_fwd(struct xdp_md *ctx)
 
     /* ── rx stats: every packet, before any drop/pass decision ── */
     stats_bump_rx(ingress, pktlen);
+    return XDP_PASS;
 
     /* ── Ethernet header ── */
     struct ethhdr *eth = data;
