@@ -374,7 +374,7 @@ install -d -m 0755 -o root    -g root         /opt/nos
 chown root:"${NOS_USER}" /opt/nos
 chmod 775 /opt/nos
 install -d -m 0775 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}"
-install -d -m 0770 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
+install -d -m 0775 -o root    -g "${NOS_USER}" "${NOS_CONFDIR}/rollback"
 install -d -m 0750 -o root    -g "${NOS_USER}" "${NOS_LIBDIR}"
 install -d -m 0750 -o "${NOS_USER}" -g "${NOS_USER}" "${NOS_STATEDIR}"
 install -d "${NOS_RUNDIR}"
@@ -467,12 +467,14 @@ for src in "${REPO_ROOT}"/config/*.json; do
     fi
 done
 
-info "Setting group permissions for config files…"
+info "Setting group permissions for config directories and files…"
 chown root:"${NOS_USER}" "${NOS_CONFDIR}/running.json" "${NOS_CONFDIR}/candidate.json"
 chmod 0664 "${NOS_CONFDIR}/running.json" "${NOS_CONFDIR}/candidate.json"
 chmod 0775 "${NOS_CONFDIR}"
 chown root:"${NOS_USER}" "${NOS_CONFDIR}"
-ok "Config directory and config files permissions set."
+chmod 0775 "${NOS_CONFDIR}/rollback"
+chown root:"${NOS_USER}" "${NOS_CONFDIR}/rollback"
+ok "Config directories and config files permissions set."
 
 # ── 8a. managed addresses file ────────────────────────────────────────────────
 info "Creating managed addresses file…"
