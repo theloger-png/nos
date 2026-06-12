@@ -86,7 +86,6 @@ int nos_xdp_fwd(struct xdp_md *ctx)
 
     /* ── rx stats: every packet, before any drop/pass decision ── */
     stats_bump_rx(ingress, pktlen);
-    return XDP_PASS;
 
     /* ── Ethernet header ── */
     struct ethhdr *eth = data;
@@ -155,9 +154,42 @@ int nos_xdp_fwd(struct xdp_md *ctx)
         if ((void *)(vh + 1) > data_end)
             return XDP_DROP;
 
-        __u16 vid  = bpf_ntohs(vh->tci) & 0x0FFFu;  /* 12-bit VID */
-        __u32 vkey = (__u32)vid;
+        __u16 vid         = bpf_ntohs(vh->tci) & 0x0FFFu;
+        __u16 inner_proto = bpf_ntohs(vh->proto);
+        void *inner_l3    = (void *)(vh + 1);
 
+        /*
+         * Native XDP (i40e and similar drivers) disables hardware VLAN
+         * stripping when a program is loaded, so 802.1Q frames arrive
+         * with the tag present in the XDP packet data.  In generic/SKB
+         * mode the NIC strips the tag before XDP runs, so the same
+         * traffic appears untagged.  Check local delivery before the
+         * vlan_map redirect: ARP and traffic addressed to the router's
+         * own IPs must reach the kernel stack rather than being switched
+         * to another interface.
+         */
+        if (inner_proto == ETH_P_ARP)
+            return XDP_PASS;
+
+        if (inner_proto == ETH_P_IP) {
+            struct iphdr *ip = inner_l3;
+            if ((void *)(ip + 1) > data_end)
+                return XDP_DROP;
+            if (bpf_map_lookup_elem(&local_ip4_map, &ip->daddr))
+                return XDP_PASS;
+        }
+
+        if (inner_proto == ETH_P_IPV6) {
+            struct ipv6hdr *ip6 = inner_l3;
+            if ((void *)(ip6 + 1) > data_end)
+                return XDP_DROP;
+            __u8 daddr6[16];
+            __builtin_memcpy(daddr6, &ip6->daddr, 16);
+            if (bpf_map_lookup_elem(&local_ip6_map, daddr6))
+                return XDP_PASS;
+        }
+
+        __u32 vkey = (__u32)vid;
         struct vlan_val *vv = bpf_map_lookup_elem(&vlan_map, &vkey);
         if (vv && vv->ifindex != 0) {
             /* VLAN map hit: redirect at L2, no MAC rewrite needed */
@@ -166,8 +198,8 @@ int nos_xdp_fwd(struct xdp_md *ctx)
         }
 
         /* No VLAN map entry — fall through to L3 using inner ethertype */
-        proto = bpf_ntohs(vh->proto);
-        l3    = (void *)(vh + 1);
+        proto = inner_proto;
+        l3    = inner_l3;
     }
 
     /* ── IPv4 forwarding ── */
