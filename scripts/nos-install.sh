@@ -449,6 +449,13 @@ for src in "${REPO_ROOT}"/config/*.json; do
     fi
 done
 
+info "Setting group permissions for config files…"
+chown root:"${NOS_USER}" "${NOS_CONFDIR}/running.json" "${NOS_CONFDIR}/candidate.json"
+chmod 0664 "${NOS_CONFDIR}/running.json" "${NOS_CONFDIR}/candidate.json"
+chmod 0775 "${NOS_CONFDIR}"
+chown root:"${NOS_USER}" "${NOS_CONFDIR}"
+ok "Config directory and config files permissions set."
+
 # ── 8a. managed addresses file ────────────────────────────────────────────────
 info "Creating managed addresses file…"
 managed_file="/opt/nos/managed_addresses.json"
