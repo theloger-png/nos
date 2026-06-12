@@ -12,7 +12,6 @@ from nos.utils.logger import get_logger
 log = get_logger(__name__)
 
 _STATS_POLL_INTERVAL = 30.0
-_XDP_ATTACHED_DRV = "xdpdrv"
 _XDP_ATTACHED_SKB = "xdpgeneric"
 
 
@@ -107,9 +106,10 @@ class PFEManager:
         1. Returns KERNEL immediately if is_available() is False.
         2. Sends a ping to confirm the PFE is responsive.
         3. Uses pyroute2 IPRoute to query the IFLA_XDP link attribute:
-             'xdpdrv'     → XDP_NATIVE
+             'xdp' + IFLA_XDP_DRV_PROG_ID present → XDP_NATIVE (link-based)
+             'xdpdrv'     → XDP_NATIVE (legacy)
              'xdpgeneric' → XDP_GENERIC
-             'none' or no IFLA_XDP → KERNEL
+             anything else → KERNEL
         """
         if not self._available:
             return ForwardingMode.KERNEL
@@ -132,7 +132,9 @@ class PFEManager:
                 if xdp is None:
                     return ForwardingMode.KERNEL
                 attached = xdp.get_attr("XDP_ATTACHED")
-                if attached == _XDP_ATTACHED_DRV:
+                if attached == "xdpdrv":
+                    return ForwardingMode.XDP_NATIVE
+                if attached == "xdp" and xdp.get_attr("IFLA_XDP_DRV_PROG_ID") is not None:
                     return ForwardingMode.XDP_NATIVE
                 if attached == _XDP_ATTACHED_SKB:
                     return ForwardingMode.XDP_GENERIC
